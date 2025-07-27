@@ -1,7 +1,10 @@
 import os
 import time
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import Config
 from document_processor import DocumentProcessor
 from text_splitter import TextSplitter
@@ -37,48 +40,11 @@ class DataCleaningPipeline:
             chunks = self.text_splitter.split_text(text)
             print(f"   分割为 {len(chunks)} 个片段")
             
-            # 3. 清洗每个片段
-            print("3. 开始清洗文本片段...")
-            processed_chunks = []
+            # 3. 并发清洗文本片段
+            print("3. 开始并发清洗文本片段...")
+            processed_chunks = self._process_chunks_concurrently(chunks)
             
-            for i, chunk in enumerate(chunks):
-                print(f"   处理片段 {i+1}/{len(chunks)}...")
-                try:
-                    cleaned_text, keywords = self.llm_client.clean_text(chunk)
-                    
-                    # 处理关键词：分割并格式化为 ###关键词1 ###关键词2 格式
-                    if keywords:
-                        # 分割关键词（支持逗号、分号、中文逗号等分隔符）
-                        import re
-                        keyword_list = re.split(r'[,，;；、\s]+', keywords.strip())
-                        keyword_list = [kw.strip() for kw in keyword_list if kw.strip()]
-                        formatted_keywords = ' '.join([f'###{kw}' for kw in keyword_list])
-                    else:
-                        formatted_keywords = '###无关键词'
-                    
-                    # 格式化片段：第一个片段不加前缀&&&&，其他片段前加&&&&
-                    if i == 0:
-                        # 第一个片段格式：正文内容\n###关键词
-                        formatted_chunk = f"{cleaned_text}\n{formatted_keywords}"
-                    else:
-                        # 其他片段格式：&&&&\n正文内容\n###关键词
-                        formatted_chunk = f"&&&&\n{cleaned_text}\n{formatted_keywords}"
-                    
-                    processed_chunks.append(formatted_chunk)
-                    
-                    # 添加延迟避免API限制
-                    time.sleep(1)
-                    
-                except Exception as e:
-                    print(f"   片段 {i+1} 清洗失败: {e}")
-                    # 使用原文本
-                    if i == 0:
-                        formatted_chunk = f"{chunk}\n###处理失败"
-                    else:
-                        formatted_chunk = f"&&&&\n{chunk}\n###处理失败"
-                    processed_chunks.append(formatted_chunk)
-            
-            # 4. 连接所有片段 - 使用换行符连接
+            # 4. 连接所有片段
             print("4. 格式化输出结果...")
             final_content = '\n'.join(processed_chunks)
             
@@ -104,6 +70,66 @@ class DataCleaningPipeline:
                 'input_file': file_path,
                 'error': str(e)
             }
+    
+    def _process_chunks_concurrently(self, chunks: List[str], max_workers: int = 10) -> List[str]:
+        """并发处理文本片段"""
+        processed_chunks = [''] * len(chunks)  # 预分配列表，保持顺序
+        
+        # 使用线程池并发处理
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_index = {
+                executor.submit(self._process_single_chunk, i, chunk): i 
+                for i, chunk in enumerate(chunks)
+            }
+            
+            # 收集结果
+            completed_count = 0
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    formatted_chunk = future.result()
+                    processed_chunks[index] = formatted_chunk
+                    completed_count += 1
+                    print(f"   完成片段 {completed_count}/{len(chunks)}")
+                except Exception as e:
+                    print(f"   片段 {index+1} 处理失败: {e}")
+                    # 使用原文本作为备选
+                    chunk = chunks[index]
+                    if index == 0:
+                        processed_chunks[index] = f"{chunk}\n###处理失败"
+                    else:
+                        processed_chunks[index] = f"&&&&\n{chunk}\n###处理失败"
+        
+        return processed_chunks
+    
+    def _process_single_chunk(self, index: int, chunk: str) -> str:
+        """处理单个文本片段"""
+        try:
+            cleaned_text, keywords = self.llm_client.clean_text(chunk)
+            
+            # 处理关键词：分割并格式化为 ###关键词1 ###关键词2 格式
+            if keywords:
+                # 分割关键词（支持逗号、分号、中文逗号等分隔符）
+                import re
+                keyword_list = re.split(r'[,，;；、\s]+', keywords.strip())
+                keyword_list = [kw.strip() for kw in keyword_list if kw.strip()]
+                formatted_keywords = ' '.join([f'###{kw}' for kw in keyword_list])
+            else:
+                formatted_keywords = '###无关键词'
+            
+            # 格式化片段：第一个片段不加前缀&&&&，其他片段前加&&&&
+            if index == 0:
+                # 第一个片段格式：正文内容\n###关键词
+                formatted_chunk = f"{cleaned_text}\n{formatted_keywords}"
+            else:
+                # 其他片段格式：&&&&\n正文内容\n###关键词
+                formatted_chunk = f"&&&&\n{cleaned_text}\n{formatted_keywords}"
+            
+            return formatted_chunk
+            
+        except Exception as e:
+            raise Exception(f"清洗片段失败: {e}")
     
     def _save_result(self, input_file: str, content: str, chunks_count: int) -> str:
         """保存清洗结果"""
