@@ -4,6 +4,9 @@ import PyPDF2
 from pathlib import Path
 import markdown
 from typing import List, Tuple
+import warnings
+import sys
+from io import StringIO
 
 class DocumentProcessor:
     """文档处理器，负责将各种格式的文档转换为文本"""
@@ -42,12 +45,27 @@ class DocumentProcessor:
         """读取PDF文档"""
         try:
             text = []
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text.append(page.extract_text())
+            
+            # 抑制PDF解析时的警告信息
+            old_stderr = sys.stderr
+            sys.stderr = StringIO()
+            
+            # 抑制warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                
+                with open(file_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    for page in pdf_reader.pages:
+                        text.append(page.extract_text())
+            
+            # 恢复stderr
+            sys.stderr = old_stderr
+            
             return '\n'.join(text)
         except Exception as e:
+            # 确保恢复stderr
+            sys.stderr = old_stderr
             raise Exception(f"读取PDF文档失败: {e}")
     
     def _read_markdown(self, file_path: Path) -> str:

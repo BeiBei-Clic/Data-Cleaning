@@ -1,6 +1,6 @@
 import requests
 import json
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 from config import Config
 
 class LLMClient:
@@ -14,40 +14,55 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("请设置OPENROUTER_API_KEY环境变量")
     
-    def clean_text(self, text: str) -> Tuple[str, str]:
+    def clean_text(self, text: str) -> str:
         """
-        使用大模型清洗文本并提取关键字
+        使用大模型清洗文本并提取关键字，返回格式化的结果
         
         Args:
             text: 需要清洗的文本
             
         Returns:
-            (清洗后的文本, 关键字)
+            格式化的文本：原文片段\n###关键词1 ###关键词2
         """
         prompt = self._create_cleaning_prompt(text)
         
         try:
             response = self._call_api(prompt)
-            return self._parse_response(response)
+            cleaned_text, keywords = self._parse_response(response)
+            
+            # 组合成最终格式：原文片段\n###关键词1 ###关键词2
+            if keywords:
+                # 处理关键词格式，确保每个关键词前都有###
+                keyword_list = [kw.strip() for kw in keywords.replace('###', '').split(',') if kw.strip()]
+                formatted_keywords = ' '.join([f"#{kw}" for kw in keyword_list])
+                return f"{cleaned_text}\n{formatted_keywords}"
+            else:
+                return f"{cleaned_text}\n###处理失败"
+                
         except Exception as e:
             print(f"调用大模型API失败: {e}")
-            return text, ""
+            # 失败时返回原文本加默认关键词
+            return f"{text}\n###处理失败"
     
     def _create_cleaning_prompt(self, text: str) -> str:
         """创建清洗文本的提示词"""
-        return f"""请对以下文本进行数据清洗，要求：
+        return f"""请对以下文本进行清洗和关键词提取。
 
-1. 删除无用字符、格式错误
-2. 优化排版
-3. 除乱码字符和排版问题，原封不动保存原文
-4. 提取3-5个关键词
+清洗要求：
+1. 保持原语言，不要翻译
+2. 删除页眉页脚、HTML标签、多余空白
+3. 修正段落分割，清理乱码
+4. 保留重要信息、数据、地名等
 
-请按以下格式返回结果：
+关键词提取要求：
+- 提取8-12个相关关键词
+- 重点关注：经营模式、产业类型、技术应用、政策措施等
+- 优先提取专业术语和地理标识
 
-**清洗后文本：**
+请直接输出清洗后的文本和关键词，格式如下：
+清洗后文本：
 [清洗后的文本内容]
-
-**关键词：**
+关键词：
 [关键词1, 关键词2, 关键词3, ...]
 
 原文本：
@@ -87,16 +102,21 @@ class LLMClient:
         
         return response.json()
     
-    def _parse_response(self, response: Dict[Any, Any]) -> Tuple[str, str]:
-        """解析API响应"""
+    def _parse_response(self, response: Dict[Any, Any]) -> tuple[str, str]:
+        """解析API响应，返回(清洗后文本, 关键词)"""
         try:
             content = response['choices'][0]['message']['content']
             
             # 解析清洗后的文本和关键词
-            if "**清洗后文本：**" in content and "**关键词：**" in content:
-                parts = content.split("**关键词：**")
-                cleaned_text = parts[0].replace("**清洗后文本：**", "").strip()
+            if "清洗后文本：" in content and "关键词：" in content:
+                parts = content.split("关键词：")
+                cleaned_text = parts[0].replace("清洗后文本：", "").strip()
                 keywords = parts[1].strip()
+                
+                # 清理可能的"原文本："部分
+                if "原文本：" in keywords:
+                    keywords = keywords.split("原文本：")[0].strip()
+                    
             else:
                 # 如果格式不符合预期，返回原始内容
                 cleaned_text = content
