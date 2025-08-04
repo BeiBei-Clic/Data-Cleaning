@@ -231,7 +231,7 @@ class DocumentHandler:
         return chunks
     
     def _call_summary_model(self, text, filename):
-        """调用阿里云模型生成摘要"""
+        """调用阿里云模型生成摘要，带重试机制"""
         dashscope.api_key = self.api_key
         
         prompt = f"""请从以下案例中提取关键信息，按以下结构总结：
@@ -248,16 +248,26 @@ class DocumentHandler:
 案例[{filename}]：
 {text[:8000]}"""
 
-        response = dashscope.Generation.call(
-            model=self.model,
-            prompt=prompt,
-            temperature=0.3,
-            top_p=0.8
-        )
-        return response.output.text
-    
+        for attempt in range(self.max_retries):
+            response = dashscope.Generation.call(
+                model=self.model,
+                prompt=prompt,
+                temperature=0.3,
+                top_p=0.8
+            )
+            
+            if response and response.output and response.output.text:
+                return response.output.text
+            
+            print(f"摘要生成失败 (尝试 {attempt + 1}/{self.max_retries}): {filename}")
+            if attempt < self.max_retries - 1:
+                print(f"等待 {self.retry_delay} 秒后重试...")
+                time.sleep(self.retry_delay)
+        
+        return f"摘要生成失败，已重试 {self.max_retries} 次"
+
     def _clean_text(self, text: str) -> str:
-        """清洗文本并提取关键词"""
+        """清洗文本并提取关键词，带重试机制"""
         dashscope.api_key = self.api_key
         
         prompt = f"""请对以下文本进行清洗和关键词提取：
@@ -281,59 +291,42 @@ class DocumentHandler:
 {text}
 """
         
-        response = dashscope.Generation.call(
-            model=self.model,
-            prompt=prompt,
-            temperature=0.3,
-            top_p=0.8
-        )
-        
-        content = response.output.text
-        
-        # 解析响应
-        if "清洗后文本：" in content and "关键词：" in content:
-            parts = content.split("关键词：")
-            cleaned_text = parts[0].replace("清洗后文本：", "").strip()
-            keywords = parts[1].strip()
+        for attempt in range(self.max_retries):
+            response = dashscope.Generation.call(
+                model=self.model,
+                prompt=prompt,
+                temperature=0.3,
+                top_p=0.8
+            )
             
-            if "原文本：" in keywords:
-                keywords = keywords.split("原文本：")[0].strip()
+            if response and response.output and response.output.text:
+                content = response.output.text
+                
+                # 解析响应
+                if "清洗后文本：" in content and "关键词：" in content:
+                    parts = content.split("关键词：")
+                    cleaned_text = parts[0].replace("清洗后文本：", "").strip()
+                    keywords = parts[1].strip()
+                    
+                    if "原文本：" in keywords:
+                        keywords = keywords.split("原文本：")[0].strip()
+                    
+                    # 格式化关键词
+                    keyword_list = [kw.strip() for kw in keywords.replace('###', '').split(',') if kw.strip()]
+                    formatted_keywords = ' '.join([f"###{kw}" for kw in keyword_list])
+                    return f"{cleaned_text}\n{formatted_keywords}"
+                
+                return f"{content}\n###处理失败"
             
-            # 格式化关键词
-            keyword_list = [kw.strip() for kw in keywords.replace('###', '').split(',') if kw.strip()]
-            formatted_keywords = ' '.join([f"###{kw}" for kw in keyword_list])
-            return f"{cleaned_text}\n{formatted_keywords}"
+            print(f"文本清洗失败 (尝试 {attempt + 1}/{self.max_retries})")
+            if attempt < self.max_retries - 1:
+                print(f"等待 {self.retry_delay} 秒后重试...")
+                time.sleep(self.retry_delay)
         
-        return f"{content}\n###处理失败"
-    
-    def _save_summary(self, content, filename, output_dir):
-        """保存摘要结果"""
-        output_filename = f"{os.path.splitext(filename)[0]}_summary.md"
-        output_path = os.path.join(output_dir, output_filename)
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(f"#{os.path.splitext(filename)[0]}案例摘要\n\n")
-            f.write(content)
-        
-        print(f"✅ 生成摘要: {output_filename}")
-    
-    def _clean_single_file(self, file_path, output_dir):
-        """清洗单个文件"""
-        # 读取和分割文本
-        text = self._read_file(file_path)
-        chunks = self._split_text(text)
-        print(f"  分割成 {len(chunks)} 段")
-        
-        # 并发处理片段
-        processed_chunks = self._process_chunks_parallel(chunks)
-        
-        # 保存结果
-        final_content = '\n'.join(processed_chunks)
-        output_path = self._save_cleaned_result(file_path, final_content, output_dir)
-        print(f"  ✓ 完成: {Path(output_path).name}")
-    
+        return f"{text}\n###API调用失败，已重试 {self.max_retries} 次"
+
     def _process_chunks_parallel(self, chunks):
-        """并发处理文本片段"""
+        """并发处理文本片段，限制并发数为10"""
         results = [None] * len(chunks)
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -343,6 +336,9 @@ class DocumentHandler:
             for future in as_completed(futures):
                 chunk_index = futures[future]
                 results[chunk_index] = future.result()
+                
+                # 添加短暂延迟，避免API速率限制
+                time.sleep(0.5)
         
         return results
     
