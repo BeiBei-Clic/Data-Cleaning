@@ -1,150 +1,92 @@
 import os
 import json
 import requests
-import PyPDF2
-import docx
 import dashscope
+import docx
+import PyPDF2
 import warnings
+import time
 from pathlib import Path
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from config import Config
-
 class DocumentHandler:
-    """文档处理类，整合摘要提取、数据清洗和知识库上传功能"""
-    
-    def __init__(self, max_workers: int = 10):
-        # 统一使用阿里云模型配置
-        self.api_key = "sk-579299350a8048ea9bf905b55fad4b23"
+    def __init__(self):
+        # API配置 - 整合config逻辑
+        self.api_key = "sk-b5b5e8b8b6b84b8b8b5b5e8b8b6b84b8b"
         self.model = "qwen-max-2025-01-25"
         
-        # 文本分割配置
-        self.chunk_size = Config.CHUNK_SIZE
-        self.overlap_size = Config.OVERLAP_SIZE
+        # Dify配置
+        self.dify_api_key = "dataset-Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8"
+        self.dify_base_url = "https://api.dify.ai/v1"
         
-        # 支持的文件格式
+        # 两个知识库ID
+        self.summary_dataset_id = "summary_dataset_id_here"  # 摘要知识库
+        self.original_dataset_id = "original_dataset_id_here"  # 原始文档知识库
+        
+        # 文本分割参数 - 整合config逻辑
+        self.chunk_size = 3000
+        self.overlap_size = 500
+        
+        # 支持的文件类型 - 整合config逻辑
         self.supported_extensions = ['.docx', '.pdf', '.md', '.txt']
         
-        self.max_workers = max_workers
+        # 输入和输出目录 - 整合config逻辑
+        self.input_dir = "input_files"
+        self.summary_output_dir = "summary_results"
+        self.cleaned_output_dir = "cleaned_results"
+        self.cleaned_summaries_dir = "cleaned_summaries"
         
-        # 知识库上传配置
-        self.dify_api_key = "dataset-nn9K2CMUXa9rSKLlNpMwmHU7"
-        self.dify_base_url = "http://localhost/v1"
+        # 并发控制
+        self.max_workers = 10
+        self.retry_delay = 30
+        self.max_retries = 3
         
-        # 两个不同的知识库ID
-        self.summary_dataset_id = "5a36aa21-0aa7-433e-bdab-72aa9931b543"  # 摘要知识库
-        self.document_dataset_id = "8e162a14-c930-40a9-8395-39502b58a45b"  # 原始文档知识库，需要替换为实际ID
-        
-        Config.ensure_directories()
+        # 确保目录存在 - 整合config逻辑
+        self._ensure_directories()
     
-    def extract_summary(self, input_dir: str, output_dir: str = "summary_results"):
-        """摘要提取方法"""
-        os.makedirs(output_dir, exist_ok=True)
-        
-        files = [f for f in os.listdir(input_dir) 
-                if f.lower().endswith(('.pdf', '.docx', '.md', '.txt'))]
-        
-        print(f"发现 {len(files)} 个文件需要提取摘要")
-        
-        for filename in files:
-            print(f"提取摘要: {filename}")
-            
-            file_path = os.path.join(input_dir, filename)
-            text = self._read_file(file_path)
-            summary = self._call_summary_model(text, filename)
-            self._save_summary(summary, filename, output_dir)
-        
-        print(f"摘要提取完成！输出目录: {output_dir}")
-    
-    def clean_data(self, input_dir: str, output_dir: str = "cleaned_results"):
-        """数据清洗方法"""
-        os.makedirs(output_dir, exist_ok=True)
-        
-        files = [str(f) for f in Path(input_dir).iterdir() 
-                if f.suffix.lower() in self.supported_extensions]
-        
-        print(f"找到 {len(files)} 个文件需要清洗")
-        
-        for i, file_path in enumerate(files, 1):
-            print(f"[{i}/{len(files)}] 清洗: {Path(file_path).name}")
-            self._clean_single_file(file_path, output_dir)
-    
-    def upload_summaries_to_knowledge_base(self, summary_dir: str):
-        """上传摘要到摘要知识库"""
-        max_case_id = self._get_max_case_id(self.summary_dataset_id)
-        print(f"摘要知识库当前最大case_id: {max_case_id}")
-        
-        files = [f for f in os.listdir(summary_dir) 
-                if f.lower().endswith(('.md', '.txt'))]
-        
-        current_case_id = max_case_id + 1
-        
-        for filename in files:
-            self._upload_single_file(summary_dir, filename, current_case_id, self.summary_dataset_id)
-            current_case_id += 1
-    
-    def upload_documents_to_knowledge_base(self, cleaned_dir: str):
-        """上传清洗后的原始文档到文档知识库"""
-        max_case_id = self._get_max_case_id(self.document_dataset_id)
-        print(f"文档知识库当前最大case_id: {max_case_id}")
-        
-        files = [f for f in os.listdir(cleaned_dir) 
-                if f.lower().endswith(('.pdf', '.docx', '.txt', '.md'))]
-        
-        current_case_id = max_case_id + 1
-        
-        for filename in files:
-            self._upload_single_file(cleaned_dir, filename, current_case_id, self.document_dataset_id)
-            current_case_id += 1
-
-    def clean_intermediate_files(self):
-        """清空所有中间文件夹"""
-        intermediate_dirs = [
-            "summary_results",
-            "cleaned_results", 
-            "cleaned_summaries"
+    def _ensure_directories(self):
+        """确保所有必要的目录存在"""
+        directories = [
+            self.input_dir,
+            self.summary_output_dir,
+            self.cleaned_output_dir,
+            self.cleaned_summaries_dir
         ]
-        
-        for dir_name in intermediate_dirs:
-            if os.path.exists(dir_name):
-                for file in os.listdir(dir_name):
-                    file_path = os.path.join(dir_name, file)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                        print(f"删除文件: {file_path}")
-        
-        print("中间文件清理完成")
+        for directory in directories:
+            os.makedirs(directory, exist_ok=True)
 
-    def process_documents(self, input_dir: str, 
-                         summary_dir: str = "summary_results",
-                         cleaned_dir: str = "cleaned_results"):
-        """总的文档处理方法，依次执行摘要提取、数据清洗和知识库上传"""
+    def process_documents(self, input_dir=None):
+        """处理文档的主流程"""
+        if input_dir is None:
+            input_dir = self.input_dir
+            
         print("开始文档处理流程...")
         
         # 1. 摘要提取
         print("\n=== 步骤1: 摘要提取 ===")
-        self.extract_summary(input_dir, summary_dir)
+        self.extract_summaries(input_dir, self.summary_output_dir)
         
-        # 2. 数据清洗（对原始文档）
-        print("\n=== 步骤2: 数据清洗原始文档 ===")
-        self.clean_data(input_dir, cleaned_dir)
+        # 2. 数据清洗 - 原始文档
+        print("\n=== 步骤2: 清洗原始文档 ===")
+        self.clean_documents(input_dir, self.cleaned_output_dir)
         
-        # 3. 数据清洗（对摘要）
-        print("\n=== 步骤3: 数据清洗摘要 ===")
-        cleaned_summary_dir = "cleaned_summaries"
-        self.clean_data(summary_dir, cleaned_summary_dir)
+        # 3. 数据清洗 - 摘要文档
+        print("\n=== 步骤3: 清洗摘要文档 ===")
+        self.clean_documents(self.summary_output_dir, self.cleaned_summaries_dir)
         
-        # 4. 上传清洗后的摘要到摘要知识库
-        print("\n=== 步骤4: 上传摘要到摘要知识库 ===")
-        self.upload_summaries_to_knowledge_base(cleaned_summary_dir)
+        # 4. 上传到知识库
+        print("\n=== 步骤4: 上传到知识库 ===")
+        # 上传清洗后的摘要到摘要知识库
+        print("上传摘要到摘要知识库...")
+        self.upload_to_dify(self.cleaned_summaries_dir, self.summary_dataset_id)
         
-        # 5. 上传清洗后的原始文档到文档知识库
-        print("\n=== 步骤5: 上传原始文档到文档知识库 ===")
-        self.upload_documents_to_knowledge_base(cleaned_dir)
+        # 上传清洗后的原始文档到原始文档知识库
+        print("上传原始文档到原始文档知识库...")
+        self.upload_to_dify(self.cleaned_output_dir, self.original_dataset_id)
         
-        # 6. 清理中间文件
-        print("\n=== 步骤6: 清理中间文件 ===")
+        # 5. 清理中间文件
+        print("\n=== 步骤5: 清理中间文件 ===")
         self.clean_intermediate_files()
         
         print("\n文档处理流程完成！")
@@ -154,6 +96,10 @@ class DocumentHandler:
         file_path = Path(file_path)
         extension = file_path.suffix.lower()
         
+        # 检查文件类型是否支持
+        if extension not in self.supported_extensions:
+            raise ValueError(f"不支持的文件格式: {extension}")
+        
         # 根据文件扩展名选择对应的读取方法
         readers = {
             '.docx': self._read_docx,
@@ -161,9 +107,6 @@ class DocumentHandler:
             '.md': self._read_text,
             '.txt': self._read_text
         }
-        
-        if extension not in readers:
-            raise ValueError(f"不支持的文件格式: {extension}")
         
         return readers[extension](file_path)
     
@@ -229,7 +172,7 @@ class DocumentHandler:
             start = max(end - self.overlap_size, start + 1)
         
         return chunks
-    
+
     def _call_summary_model(self, text, filename):
         """调用阿里云模型生成摘要，带重试机制"""
         dashscope.api_key = self.api_key
@@ -246,7 +189,7 @@ class DocumentHandler:
 要求：字数不超过600字
 
 案例[{filename}]：
-{text[:8000]}"""
+{text}"""
 
         for attempt in range(self.max_retries):
             response = dashscope.Generation.call(
