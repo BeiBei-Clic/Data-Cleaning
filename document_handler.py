@@ -7,18 +7,23 @@ from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-import dashscope
 import docx
 import PyPDF2
 from dotenv import load_dotenv
+from openai import OpenAI
 
 class DocumentHandler:
     def __init__(self):
         load_dotenv()
         
-        # API配置
-        self.api_key = os.getenv('DASHSCOPE_API_KEY')
-        self.model = 'qwen-max-2025-01-25'
+        # OpenAI配置
+        self.client = OpenAI(
+            api_key=os.getenv('OPENROUTER_API_KEY'),
+            base_url=os.getenv('OPENROUTER_BASE_URL')
+        )
+        self.model = 'google/gemini-2.5-flash'
+        
+        # Dify配置
         self.dify_api_key = os.getenv('DIFY_API_KEY')
         self.dify_base_url = os.getenv('DIFY_BASE_URL', 'http://localhost/v1')
         self.summary_dataset_id = os.getenv('SUMMARY_DATASET_ID')
@@ -71,8 +76,6 @@ class DocumentHandler:
 
     def generate_summary(self, text: str, filename: str) -> str:
         """生成摘要"""
-        dashscope.api_key = self.api_key
-        
         prompt = f"""请从以下案例中提取关键信息，按以下结构总结：
 
 【标题】<保持原文标题不变>
@@ -88,15 +91,14 @@ class DocumentHandler:
 {text}"""
 
         for attempt in range(self.max_retries):
-            response = dashscope.Generation.call(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                prompt=prompt,
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                top_p=0.8
             )
             
-            if response and response.output and response.output.text:
-                return response.output.text
+            if response and response.choices and response.choices[0].message.content:
+                return response.choices[0].message.content
             
             if attempt < self.max_retries - 1:
                 time.sleep(30)
@@ -132,25 +134,49 @@ class DocumentHandler:
                 
                 start = max(end - self.overlap_size, start + 1)
         
-        # 并发清洗
-        results = [None] * len(chunks)
+        # 顺序处理，避免并发超时
+        results = []
+        total_chunks = len(chunks)
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {executor.submit(self.clean_single_chunk, i, chunk): i 
-                      for i, chunk in enumerate(chunks)}
-            
-            for future in as_completed(futures):
-                chunk_index = futures[future]
-                results[chunk_index] = future.result()
-                time.sleep(0.5)
+        for i, chunk in enumerate(chunks):
+            print(f"正在处理文本块 {i+1}/{total_chunks}...")
+            result = self.clean_single_chunk(i, chunk)
+            results.append(result)
+            time.sleep(1)
         
         return '\n'.join(results)
 
     def clean_single_chunk(self, index: int, chunk_text: str) -> str:
-        """清洗单个文本块"""
-        dashscope.api_key = self.api_key
+        """清洗单个文本块 - 使用结构化输出"""
         
-        prompt = f"""请对以下文本进行清洗和关键词提取：
+        # 定义结构化输出的JSON Schema
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "text_cleaning_result",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "cleaned_text": {
+                            "type": "string",
+                            "description": "清洗后的纯净文本内容"
+                        },
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 3,
+                            "maxItems": 12,
+                            "description": "提取的关键词列表"
+                        }
+                    },
+                    "required": ["cleaned_text", "keywords"],
+                    "additionalProperties": False
+                },
+                "strict": True
+            }
+        }
+        
+        prompt = f"""请对以下文本进行清洗和关键词提取，严格按照JSON格式输出：
 
 清洗要求：
 1. 保持原语言，删除页眉页脚、HTML标签、多余空白
@@ -163,74 +189,50 @@ class DocumentHandler:
 - 重点关注：经营模式、产业类型、技术应用、政策措施
 - 关键词要简洁准确，不超过6个字
 
-输出格式（严格按照此格式）：
-清洗后文本：
-[清洗后的文本内容]
-关键词：
-关键词1,关键词2,关键词3,关键词4,关键词5
-
 原文本：
 {chunk_text}
 """
         
         for attempt in range(self.max_retries):
-            response = dashscope.Generation.call(
+            print(f"  尝试第 {attempt + 1} 次调用API...")
+            
+            response = self.client.chat.completions.create(
                 model=self.model,
-                prompt=prompt,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=response_format,
                 temperature=0.3,
-                top_p=0.8
+                max_tokens=2000
             )
             
-            if response and response.output and response.output.text:
-                result = response.output.text
+            if response and response.choices and response.choices[0].message.content:
+                result_json = json.loads(response.choices[0].message.content)
                 
-                # 解析结果
-                cleaned_text = ""
-                keywords = []
+                cleaned_text = result_json.get("cleaned_text", "").strip()
+                keywords = result_json.get("keywords", [])
                 
-                if "清洗后文本：" in result and "关键词：" in result:
-                    parts = result.split("关键词：")
-                    cleaned_text = parts[0].replace("清洗后文本：", "").strip()
-                    keyword_part = parts[1].strip()
-                    
-                    if "原文本：" in keyword_part:
-                        keyword_part = keyword_part.split("原文本：")[0].strip()
-                    
-                    # 提取关键词
-                    keyword_part = keyword_part.replace("###", "").replace("[", "").replace("]", "")
-                    keyword_part = keyword_part.replace("、", ",").replace("；", ",").replace(";", ",")
-                    
-                    for kw in keyword_part.split(","):
-                        kw = kw.strip()
-                        if kw and len(kw) <= 10:
-                            keywords.append(kw)
-                    
-                    if len(keywords) > 12:
-                        keywords = keywords[:12]
-                    elif len(keywords) < 3:
-                        keywords.extend(["补充关键词"] * (3 - len(keywords)))
-                else:
-                    cleaned_text = result.strip()
-                    keywords = ["格式解析失败"]
+                # 验证和清理关键词
+                valid_keywords = []
+                for kw in keywords:
+                    kw = str(kw).strip()
+                    if kw and len(kw) <= 10:
+                        valid_keywords.append(kw)
                 
-                # 清理文本
-                cleaned_text = cleaned_text.replace("###", "").replace("&&&&", "")
-                lines = cleaned_text.split('\n')
-                cleaned_lines = []
-                
-                for line in lines:
-                    line = line.strip()
-                    if line and not line.startswith('**') and not line.startswith('#'):
-                        cleaned_lines.append(line)
-                
-                cleaned_text = '\n'.join(cleaned_lines).strip()
+                # 确保关键词数量在合理范围内
+                if len(valid_keywords) > 12:
+                    valid_keywords = valid_keywords[:12]
+                elif len(valid_keywords) < 3:
+                    valid_keywords.extend(["补充关键词"] * (3 - len(valid_keywords)))
                 
                 # 格式化结果
-                formatted_keywords = "".join([f"{self.subchunk_separator}{kw}" for kw in keywords])
+                formatted_keywords = "".join([f"{self.subchunk_separator}{kw}" for kw in valid_keywords])
+                print(f"  ✅ 文本块 {index + 1} 处理成功")
                 return f"{cleaned_text}\n{formatted_keywords}"
             
             if attempt < self.max_retries - 1:
+                print(f"  ⚠️ API调用失败，等待30秒后重试...")
                 time.sleep(30)
+            else:
+                print(f"  ❌ 文本块 {index + 1} 处理失败，使用原文本")
         
         # 失败时返回原文本
         fallback_result = chunk_text.strip()
