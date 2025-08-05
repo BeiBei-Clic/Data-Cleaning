@@ -11,6 +11,9 @@ import PyPDF2
 from dotenv import load_dotenv
 from openai import OpenAI
 
+import concurrent.futures
+import threading
+
 class DocumentHandler:
     def __init__(self):
         load_dotenv()
@@ -334,6 +337,86 @@ class DocumentHandler:
         response = requests.post(url, headers=headers, json=data)
         return response.status_code == 200
 
+    def upload_file_with_retry(self, file_path: str, filename: str, case_id: int, dataset_id: str, max_retries: int = 3) -> bool:
+        """带重试机制的文件上传"""
+        for attempt in range(max_retries):
+            if self.upload_file(file_path, filename, case_id, dataset_id):
+                return True
+            if attempt < max_retries - 1:
+                print(f"⚠️ 上传失败，正在重试 ({attempt + 1}/{max_retries}): {filename}")
+        return False
+
+    def upload_paired_documents(self) -> bool:
+        """并发上传摘要和原文，确保case_id一致"""
+        if not self.cleaned_summaries:
+            print("没有清洗后的摘要需要上传")
+            return True
+            
+        # 获取最大case_id
+        max_case_id = max(
+            self.get_max_case_id(self.summary_dataset_id),
+            self.get_max_case_id(self.original_dataset_id)
+        )
+        
+        upload_results = []
+        sorted_summaries = sorted(self.cleaned_summaries.items())
+        
+        # 使用线程池并发上传
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            for i, (filename, summary_content) in enumerate(sorted_summaries):
+                case_id = max_case_id + i + 1
+                
+                # 检查是否有对应的原文
+                original_content = self.cleaned_originals.get(filename)
+                if not original_content:
+                    print(f"⚠️ 文件 {filename} 没有对应的清洗后原文，跳过")
+                    continue
+                
+                print(f"正在准备上传文件对: {filename} (case_id: {case_id})")
+                
+                # 准备摘要文件
+                summary_filename = f"{Path(filename).stem}_cleaned_summary.md"
+                summary_temp_path = os.path.join("temp_cleaned_summaries", summary_filename)
+                os.makedirs("temp_cleaned_summaries", exist_ok=True)
+                
+                with open(summary_temp_path, 'w', encoding='utf-8') as f:
+                    f.write(summary_content)
+                
+                # 准备原文文件
+                original_filename = f"{Path(filename).stem}_cleaned_original.md"
+                original_temp_path = os.path.join("temp_cleaned_originals", original_filename)
+                os.makedirs("temp_cleaned_originals", exist_ok=True)
+                
+                with open(original_temp_path, 'w', encoding='utf-8') as f:
+                    f.write(original_content)
+                
+                # 并发提交上传任务
+                summary_future = executor.submit(
+                    self.upload_file_with_retry, 
+                    summary_temp_path, summary_filename, case_id, self.summary_dataset_id
+                )
+                original_future = executor.submit(
+                    self.upload_file_with_retry, 
+                    original_temp_path, original_filename, case_id, self.original_dataset_id
+                )
+                
+                # 等待两个上传任务完成
+                summary_success = summary_future.result()
+                original_success = original_future.result()
+                
+                # 清理临时文件
+                os.remove(summary_temp_path)
+                os.remove(original_temp_path)
+                
+                if summary_success and original_success:
+                    print(f"✅ 文件对上传成功: {filename} (case_id: {case_id})")
+                    upload_results.append(True)
+                else:
+                    print(f"❌ 文件对上传失败: {filename} - 摘要: {'✅' if summary_success else '❌'}, 原文: {'✅' if original_success else '❌'}")
+                    upload_results.append(False)
+        
+        return all(upload_results)
+
     def process_documents(self, input_dir: str):
         """主处理流程"""
         
@@ -380,27 +463,22 @@ class DocumentHandler:
                     f.write(cleaned_summary)
                 print(f"✅ 清洗摘要: {filename}")
         
-        # 步骤4: 上传到知识库
+        # 步骤4: 配对上传到知识库
         if self.cleaned_summaries or self.cleaned_originals:
-            print("=== 步骤4: 上传到Dify知识库 ===")
+            print("=== 步骤4: 配对上传到Dify知识库 ===")
             
-            summary_success = True
-            if self.cleaned_summaries:
-                print("上传摘要到知识库...")
-                summary_success = self.upload_to_dify(self.cleaned_summaries, self.summary_dataset_id, "summary")
-                if summary_success:
-                    print("✅ 摘要上传成功")
-                else:
-                    print("❌ 摘要上传失败")
+            upload_success = self.upload_paired_documents()
             
-            original_success = True
-            if self.cleaned_originals:
-                print("上传原文到知识库...")
-                original_success = self.upload_to_dify(self.cleaned_originals, self.original_dataset_id, "original")
-                if original_success:
-                    print("✅ 原文上传成功")
-                else:
-                    print("❌ 原文上传失败")
+            if upload_success:
+                # 清理所有中间文件
+                for temp_dir in [self.summary_dir, self.cleaned_original_dir, self.cleaned_summary_dir]:
+                    if os.path.exists(temp_dir):
+                        for filename in os.listdir(temp_dir):
+                            os.remove(os.path.join(temp_dir, filename))
+                print("✅ 所有文档配对上传成功，已清理中间文件！")
+            else:
+                print("⚠️ 部分文档上传失败，保留中间文件以便重新处理")
+        else:
             print("✅ 所有文档处理完成！")
 
 if __name__ == "__main__":
