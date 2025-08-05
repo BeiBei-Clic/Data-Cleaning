@@ -138,9 +138,9 @@ class DocumentHandler:
             print(f"正在处理文本块 {i+1}/{len(chunks)}...")
             result = self.clean_single_chunk(i, chunk)
             results.append(result)
-            time.sleep(1)
         
-        return '\n'.join(results)
+        # 用&&&&连接各个文本块
+        return f"\n{self.parent_separator}\n".join(results)
 
     def clean_single_chunk(self, index: int, chunk_text: str) -> str:
         """清洗单个文本块"""
@@ -177,21 +177,18 @@ class DocumentHandler:
             if response and response.choices and response.choices[0].message.content:
                 content = response.choices[0].message.content
                 
-                # 简化解析逻辑
+                # 解析清洗后的文本和关键词
                 if "清洗后文本：" in content:
-                    if "关键词：" in content:
-                        parts = content.split("关键词：")
-                        cleaned_text = parts[0].replace("清洗后文本：", "").strip()
-                        keywords = parts[1].split("原文本：")[0].strip()
-                    else:
-                        cleaned_text = content.replace("清洗后文本：", "").strip()
-                        keywords = "处理不完整"
+                    parts = content.split("关键词：")
+                    cleaned_text = parts[0].replace("清洗后文本：", "").strip()
+                    keywords = parts[1].split("原文本：")[0].strip()
                     
                     # 格式化关键词
                     keyword_list = [kw.strip() for kw in keywords.split(',') if kw.strip()]
                     formatted_keywords = "".join([f"{self.subchunk_separator}{kw}" for kw in keyword_list])
                     
                     print(f"  ✅ 文本块 {index + 1} 处理成功")
+                    # 返回格式：正文 + 换行 + 关键词
                     return f"{cleaned_text}\n{formatted_keywords}"
                 
                 # 如果没有标准格式，直接返回内容
@@ -231,10 +228,8 @@ class DocumentHandler:
             # 上传文件
             success = self.upload_file(temp_path, temp_filename, case_id, dataset_id)
             upload_results.append(success)
-            
-            # 删除临时文件
             os.remove(temp_path)
-            
+                        
             print(f"{'✅' if success else '❌'} 上传: {filename} (case_id: {case_id})")
         
         return all(upload_results)
@@ -341,108 +336,71 @@ class DocumentHandler:
 
     def process_documents(self, input_dir: str):
         """主处理流程"""
-        # 1. 处理中间文件
-        for directory, storage in [
-            (self.summary_dir, self.summaries),
-            (self.cleaned_original_dir, self.cleaned_originals),
-            (self.cleaned_summary_dir, self.cleaned_summaries)
-        ]:
-            if os.path.exists(directory):
-                files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
-                if files:
-                    print(f"发现 {len(files)} 个待处理文件: {directory}")
-                    for filename in files:
-                        filepath = os.path.join(directory, filename)
-                        with open(filepath, 'r', encoding='utf-8') as f:
-                            storage[filename] = f.read()
-                        print(f"✅ 加载: {filename}")
         
-        # 2. 处理新文件
         files = [f for f in os.listdir(input_dir) if f.lower().endswith(('.pdf', '.docx', '.md', '.txt'))]
         
         if files:
             print(f"发现 {len(files)} 个新文件需要处理...")
             
-            # 生成摘要
+            # 步骤1: 生成摘要
+            print("=== 步骤1: 生成摘要 ===")
             for filename in files:
-                if filename not in self.summaries:
-                    filepath = os.path.join(input_dir, filename)
-                    text = self.read_file(filepath)
-                    summary = self.generate_summary(text, filename)
-                    self.summaries[filename] = summary
-                    
-                    summary_path = os.path.join(self.summary_dir, f"{filename}.summary")
-                    with open(summary_path, 'w', encoding='utf-8') as f:
-                        f.write(summary)
-                    print(f"✅ 摘要: {filename}")
+                filepath = os.path.join(input_dir, filename)
+                text = self.read_file(filepath)
+                summary = self.generate_summary(text, filename)
+                self.summaries[filename] = summary
+                
+                summary_path = os.path.join(self.summary_dir, f"{filename}.summary")
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write(summary)
+                print(f"✅ 摘要: {filename}")
             
-            # 清洗原始文档
+            # 步骤2: 清洗原始文档
+            print("=== 步骤2: 清洗原始文档 ===")
             for filename in files:
-                if filename not in self.cleaned_originals:
-                    filepath = os.path.join(input_dir, filename)
-                    text = self.read_file(filepath)
-                    cleaned = self.clean_text_chunks(text)
-                    self.cleaned_originals[filename] = cleaned
-                    
-                    original_path = os.path.join(self.cleaned_original_dir, f"{filename}.cleaned_original")
-                    with open(original_path, 'w', encoding='utf-8') as f:
-                        f.write(cleaned)
-                    print(f"✅ 清洗原始: {filename}")
+                filepath = os.path.join(input_dir, filename)
+                text = self.read_file(filepath)
+                cleaned = self.clean_text_chunks(text)
+                self.cleaned_originals[filename] = cleaned
+                
+                original_path = os.path.join(self.cleaned_original_dir, f"{filename}.cleaned_original")
+                with open(original_path, 'w', encoding='utf-8') as f:
+                    f.write(cleaned)
+                print(f"✅ 清洗原始: {filename}")
             
-            # 删除摘要中间文件
-            if os.path.exists(self.summary_dir):
-                for filename in os.listdir(self.summary_dir):
-                    os.remove(os.path.join(self.summary_dir, filename))
-            
-            # 清洗摘要
+            # 步骤3: 清洗摘要
+            print("=== 步骤3: 清洗摘要 ===")
             for filename in files:
-                if filename not in self.cleaned_summaries:
-                    summary = self.summaries[filename]
-                    cleaned_summary = self.clean_text_chunks(summary)
-                    self.cleaned_summaries[filename] = cleaned_summary
-                    
-                    summary_path = os.path.join(self.cleaned_summary_dir, f"{filename}.cleaned_summary")
-                    with open(summary_path, 'w', encoding='utf-8') as f:
-                        f.write(cleaned_summary)
-                    print(f"✅ 清洗摘要: {filename}")
-            
-            # 删除原文中间文件
-            if os.path.exists(self.cleaned_original_dir):
-                for filename in os.listdir(self.cleaned_original_dir):
-                    os.remove(os.path.join(self.cleaned_original_dir, filename))
+                summary = self.summaries[filename]
+                cleaned_summary = self.clean_text_chunks(summary)
+                self.cleaned_summaries[filename] = cleaned_summary
+                
+                summary_path = os.path.join(self.cleaned_summary_dir, f"{filename}.cleaned_summary")
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write(cleaned_summary)
+                print(f"✅ 清洗摘要: {filename}")
         
-        # 3. 上传到知识库
+        # 步骤4: 上传到知识库
         if self.cleaned_summaries or self.cleaned_originals:
-            print("开始上传到Dify知识库...")
+            print("=== 步骤4: 上传到Dify知识库 ===")
             
             summary_success = True
             if self.cleaned_summaries:
+                print("上传摘要到知识库...")
                 summary_success = self.upload_to_dify(self.cleaned_summaries, self.summary_dataset_id, "summary")
                 if summary_success:
-                    if os.path.exists(self.cleaned_summary_dir):
-                        for filename in os.listdir(self.cleaned_summary_dir):
-                            os.remove(os.path.join(self.cleaned_summary_dir, filename))
-                    print("✅ 摘要上传成功，已清理中间文件")
+                    print("✅ 摘要上传成功")
                 else:
-                    print("❌ 摘要上传失败，保留中间文件")
+                    print("❌ 摘要上传失败")
             
             original_success = True
             if self.cleaned_originals:
+                print("上传原文到知识库...")
                 original_success = self.upload_to_dify(self.cleaned_originals, self.original_dataset_id, "original")
                 if original_success:
-                    for temp_dir in [self.summary_dir, self.cleaned_original_dir, self.cleaned_summary_dir]:
-                        if os.path.exists(temp_dir):
-                            for filename in os.listdir(temp_dir):
-                                os.remove(os.path.join(temp_dir, filename))
-                    print("✅ 原文上传成功，已清理所有中间文件")
+                    print("✅ 原文上传成功")
                 else:
-                    print("❌ 原文上传失败，保留中间文件")
-            
-            if summary_success and original_success:
-                print("✅ 所有文档处理完成！")
-            else:
-                print("⚠️ 部分上传失败，可重新运行程序继续处理")
-        else:
+                    print("❌ 原文上传失败")
             print("✅ 所有文档处理完成！")
 
 if __name__ == "__main__":
