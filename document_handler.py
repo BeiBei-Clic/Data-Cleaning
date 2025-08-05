@@ -11,51 +11,103 @@ import PyPDF2
 from dotenv import load_dotenv
 from openai import OpenAI
 
-import concurrent.futures
-import threading
-
 class DocumentHandler:
     def __init__(self):
+        """
+        ========================================
+        文档处理器初始化 - 新手使用指南
+        ========================================
+        
+        🚀 快速开始步骤：
+        1. 创建 .env 文件并配置必要参数（见下方详细说明）
+        2. 创建 input_files 文件夹，放入要处理的文档
+        3. 运行程序：python document_handler.py
+        
+        📋 必需的 .env 文件配置：
+        创建项目根目录下的 .env 文件，包含以下内容：
+        
+        # 大模型API配置（用于生成摘要和清洗文本不一定是OPENROUTER，记得在init那里改成你对应的就行）
+        OPENROUTER_API_KEY=your_openrouter_api_key_here
+        OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+        
+        # Dify知识库配置（用于存储处理后的文档）
+        DIFY_API_KEY=your_dify_api_key_here
+        DIFY_BASE_URL=http://your_dify_server_url/v1
+        SUMMARY_DATASET_ID=your_summary_dataset_id_here（存放摘要的知识库）
+        ORIGINAL_DATASET_ID=your_original_dataset_id_here（存放原文的知识库）
+        
+        📁 文件夹说明：
+        - input_files/          : 【必须创建】放入要处理的文档（PDF、Word、MD、TXT）
+        - temp_summaries/       : 【自动创建】临时存储生成的摘要文件
+        - temp_cleaned_originals/ : 【自动创建】临时存储清洗后的原文
+        - temp_cleaned_summaries/ : 【自动创建】临时存储清洗后的摘要
+        
+        ⚠️ 重要提醒：
+        如果 temp_ 开头的文件夹已存在，请先手动删除！
+        这些是中间处理文件，可能包含上次未完成的数据。
+        
+        🔧 可调参数说明：
+        下方参数可根据需求调整，无需修改代码其他部分
+        """
+        
+        # 加载环境变量配置
         load_dotenv()
         
-        # OpenAI配置
+        # ==================== 大模型配置 ====================
+        # 用于生成摘要和清洗文本的AI模型配置
         self.client = OpenAI(
-            api_key=os.getenv('OPENROUTER_API_KEY'),
-            base_url=os.getenv('OPENROUTER_BASE_URL')
+            api_key=os.getenv('OPENROUTER_API_KEY'),    # 从.env文件读取API密钥
+            base_url=os.getenv('OPENROUTER_BASE_URL')   # 从.env文件读取API地址
         )
+        
+        # 🔧 可调参数：选择使用的模型
+        # 推荐模型：'google/gemini-2.5-flash' (快速便宜)
+        # 其他选择：'anthropic/claude-3-haiku', 'openai/gpt-4o-mini'
         self.model = 'google/gemini-2.5-flash'
         
-        # Dify配置
-        self.dify_api_key = os.getenv('DIFY_API_KEY')
-        self.dify_base_url = os.getenv('DIFY_BASE_URL', 'http://localhost/v1')
-        self.summary_dataset_id = os.getenv('SUMMARY_DATASET_ID')
-        self.original_dataset_id = os.getenv('ORIGINAL_DATASET_ID')
+        # ==================== Dify知识库配置 ====================
+        # Dify是用于存储和管理处理后文档的知识库系统
+        self.dify_api_key = os.getenv('DIFY_API_KEY')                    # Dify API密钥
+        self.dify_base_url = os.getenv('DIFY_BASE_URL', 'http://localhost/v1')  # Dify服务地址
+        self.summary_dataset_id = os.getenv('SUMMARY_DATASET_ID')       # 摘要知识库ID
+        self.original_dataset_id = os.getenv('ORIGINAL_DATASET_ID')     # 原文知识库ID
         
-        # 处理参数
-        self.chunk_size = 3000
-        self.overlap_size = 500
-        self.max_retries = 3
+        # ==================== 文本处理参数 ====================
+        # 🔧 可调参数：文本分块处理设置
+        self.chunk_size = 3000      # 每个文本块的最大字符数（建议2000-5000）
+        self.overlap_size = 500     # 文本块之间的重叠字符数（建议chunk_size的10-20%）
+        self.max_retries = 3        # API调用失败时的最大重试次数
         
-        # Dify参数
-        self.parent_mode = "paragraph"
-        self.parent_separator = "&&&&"
-        self.parent_max_tokens = 4000
-        self.subchunk_separator = "###"
-        self.subchunk_max_tokens = 96
+        # ==================== Dify知识库分块参数 ====================
+        # 这些参数控制文档在Dify中的存储和检索方式
+        # 🔧 可调参数：根据文档类型和检索需求调整
+        self.parent_mode = "paragraph"          # 父级分块模式：paragraph(段落) 或 sentence(句子)
+        self.parent_separator = "&&&&"          # 父级分块分隔符（不要修改，除非了解Dify机制）
+        self.parent_max_tokens = 4000           # 父级分块最大token数（建议3000-6000）
+        self.subchunk_separator = "###"         # 子分块分隔符（用于关键词标记）
+        self.subchunk_max_tokens = 96           # 子分块最大token数（建议64-128）
         
-        # 目录
-        self.summary_dir = "temp_summaries"
-        self.cleaned_original_dir = "temp_cleaned_originals"
-        self.cleaned_summary_dir = "temp_cleaned_summaries"
+        # ==================== 临时文件夹配置 ====================
+        # 程序运行过程中的中间文件存储位置
+        self.summary_dir = "temp_summaries"              # 存储生成的摘要
+        self.cleaned_original_dir = "temp_cleaned_originals"  # 存储清洗后的原文
+        self.cleaned_summary_dir = "temp_cleaned_summaries"   # 存储清洗后的摘要
         
-        # 确保目录存在
+        # 自动创建必要的目录
+        # input_files: 用户放入原始文档的文件夹
+        # temp_*: 程序处理过程中的临时文件夹
         for directory in ["input_files", self.summary_dir, self.cleaned_original_dir, self.cleaned_summary_dir]:
             os.makedirs(directory, exist_ok=True)
         
-        # 内存存储
-        self.summaries: Dict[str, str] = {}
-        self.cleaned_originals: Dict[str, str] = {}
-        self.cleaned_summaries: Dict[str, str] = {}
+        # ==================== 内存数据存储 ====================
+        # 程序运行时在内存中临时存储处理结果
+        self.summaries: Dict[str, str] = {}         # 存储生成的摘要 {文件名: 摘要内容}
+        self.cleaned_originals: Dict[str, str] = {} # 存储清洗后的原文 {文件名: 清洗后内容}
+        self.cleaned_summaries: Dict[str, str] = {} # 存储清洗后的摘要 {文件名: 清洗后摘要}
+        
+        print("✅ 文档处理器初始化完成！")
+        print("📁 请将要处理的文档放入 input_files/ 文件夹")
+        print("📄 支持的文件格式：PDF、Word(.docx)、Markdown(.md)、文本(.txt)")
 
     def read_file(self, file_path: str) -> str:
         """读取文件内容"""
@@ -337,17 +389,8 @@ class DocumentHandler:
         response = requests.post(url, headers=headers, json=data)
         return response.status_code == 200
 
-    def upload_file_with_retry(self, file_path: str, filename: str, case_id: int, dataset_id: str, max_retries: int = 3) -> bool:
-        """带重试机制的文件上传"""
-        for attempt in range(max_retries):
-            if self.upload_file(file_path, filename, case_id, dataset_id):
-                return True
-            if attempt < max_retries - 1:
-                print(f"⚠️ 上传失败，正在重试 ({attempt + 1}/{max_retries}): {filename}")
-        return False
-
     def upload_paired_documents(self) -> bool:
-        """并发上传摘要和原文，确保case_id一致"""
+        """同时上传摘要和原文，确保case_id一致"""
         if not self.cleaned_summaries:
             print("没有清洗后的摘要需要上传")
             return True
@@ -361,59 +404,50 @@ class DocumentHandler:
         upload_results = []
         sorted_summaries = sorted(self.cleaned_summaries.items())
         
-        # 使用线程池并发上传
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            for i, (filename, summary_content) in enumerate(sorted_summaries):
-                case_id = max_case_id + i + 1
-                
-                # 检查是否有对应的原文
-                original_content = self.cleaned_originals.get(filename)
-                if not original_content:
-                    print(f"⚠️ 文件 {filename} 没有对应的清洗后原文，跳过")
-                    continue
-                
-                print(f"正在准备上传文件对: {filename} (case_id: {case_id})")
-                
-                # 准备摘要文件
-                summary_filename = f"{Path(filename).stem}_cleaned_summary.md"
-                summary_temp_path = os.path.join("temp_cleaned_summaries", summary_filename)
-                os.makedirs("temp_cleaned_summaries", exist_ok=True)
-                
-                with open(summary_temp_path, 'w', encoding='utf-8') as f:
-                    f.write(summary_content)
-                
-                # 准备原文文件
-                original_filename = f"{Path(filename).stem}_cleaned_original.md"
-                original_temp_path = os.path.join("temp_cleaned_originals", original_filename)
-                os.makedirs("temp_cleaned_originals", exist_ok=True)
-                
-                with open(original_temp_path, 'w', encoding='utf-8') as f:
-                    f.write(original_content)
-                
-                # 并发提交上传任务
-                summary_future = executor.submit(
-                    self.upload_file_with_retry, 
-                    summary_temp_path, summary_filename, case_id, self.summary_dataset_id
-                )
-                original_future = executor.submit(
-                    self.upload_file_with_retry, 
-                    original_temp_path, original_filename, case_id, self.original_dataset_id
-                )
-                
-                # 等待两个上传任务完成
-                summary_success = summary_future.result()
-                original_success = original_future.result()
-                
-                # 清理临时文件
-                os.remove(summary_temp_path)
-                os.remove(original_temp_path)
-                
-                if summary_success and original_success:
-                    print(f"✅ 文件对上传成功: {filename} (case_id: {case_id})")
-                    upload_results.append(True)
-                else:
-                    print(f"❌ 文件对上传失败: {filename} - 摘要: {'✅' if summary_success else '❌'}, 原文: {'✅' if original_success else '❌'}")
-                    upload_results.append(False)
+        for i, (filename, summary_content) in enumerate(sorted_summaries):
+            case_id = max_case_id + i + 1
+            
+            # 检查是否有对应的原文
+            original_content = self.cleaned_originals.get(filename)
+            if not original_content:
+                print(f"⚠️ 文件 {filename} 没有对应的清洗后原文，跳过")
+                continue
+            
+            print(f"正在上传文件对: {filename} (case_id: {case_id})")
+            
+            # 上传摘要
+            summary_filename = f"{Path(filename).stem}_cleaned_summary.md"
+            summary_temp_path = os.path.join("temp_cleaned_summaries", summary_filename)
+            os.makedirs("temp_cleaned_summaries", exist_ok=True)
+            
+            with open(summary_temp_path, 'w', encoding='utf-8') as f:
+                f.write(summary_content)
+            
+            summary_success = self.upload_file(summary_temp_path, summary_filename, case_id, self.summary_dataset_id)
+            os.remove(summary_temp_path)
+            
+            if not summary_success:
+                print(f"❌ 摘要上传失败: {filename}")
+                upload_results.append(False)
+                continue
+            
+            # 上传原文
+            original_filename = f"{Path(filename).stem}_cleaned_original.md"
+            original_temp_path = os.path.join("temp_cleaned_originals", original_filename)
+            os.makedirs("temp_cleaned_originals", exist_ok=True)
+            
+            with open(original_temp_path, 'w', encoding='utf-8') as f:
+                f.write(original_content)
+            
+            original_success = self.upload_file(original_temp_path, original_filename, case_id, self.original_dataset_id)
+            os.remove(original_temp_path)
+            
+            if summary_success and original_success:
+                print(f"✅ 文件对上传成功: {filename} (case_id: {case_id})")
+                upload_results.append(True)
+            else:
+                print(f"❌ 原文上传失败: {filename}")
+                upload_results.append(False)
         
         return all(upload_results)
 
