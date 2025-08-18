@@ -1,9 +1,11 @@
 import os
+import sys
 import time
 import json
 import warnings
 from pathlib import Path
 from typing import Dict
+from contextlib import redirect_stderr
 
 import requests
 import docx
@@ -118,11 +120,14 @@ class DocumentHandler:
             doc = docx.Document(path)
             return '\n'.join([p.text for p in doc.paragraphs])
         elif ext == '.pdf':
+            # 完全抑制PyPDF2的所有警告和错误输出
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                with open(path, 'rb') as f:
-                    reader = PyPDF2.PdfReader(f)
-                    return '\n'.join([page.extract_text() for page in reader.pages])
+                with open(os.devnull, 'w') as devnull:
+                    with redirect_stderr(devnull):
+                        with open(path, 'rb') as f:
+                            reader = PyPDF2.PdfReader(f)
+                            return '\n'.join([page.extract_text() for page in reader.pages])
         else:
             with open(path, 'r', encoding='utf-8') as f:
                 return f.read()
