@@ -238,6 +238,89 @@ def get_index_job_status(client, workspace_id, job_id, index_id):
     runtime = util_models.RuntimeOptions()
     return client.get_index_job_status_with_options(workspace_id, get_index_job_status_request, headers, runtime)
 
+def submit_index_add_documents_job(client, workspace_id, index_id, file_id, source_type):
+    """
+    向一个非结构化知识库追加导入已解析的文档。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+        index_id (str): 知识库ID。
+        file_id (str): 文档ID。
+        source_type(str): 数据类型。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    submit_index_add_documents_job_request = bailian_20231229_models.SubmitIndexAddDocumentsJobRequest(
+        index_id=index_id,
+        document_ids=[file_id],
+        source_type=source_type
+    )
+    runtime = util_models.RuntimeOptions()
+    return client.submit_index_add_documents_job_with_options(workspace_id, submit_index_add_documents_job_request, headers, runtime)
+
+def get_index_job_status(client, workspace_id, index_id, job_id):
+    """
+    查询索引任务状态。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+        index_id (str): 知识库ID。
+        job_id (str): 任务ID。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    get_index_job_status_request = bailian_20231229_models.GetIndexJobStatusRequest(
+        index_id=index_id,
+        job_id=job_id
+    )
+    runtime = util_models.RuntimeOptions()
+    return client.get_index_job_status_with_options(workspace_id, get_index_job_status_request, headers, runtime)
+
+def delete_index_document(client, workspace_id, index_id, file_id):
+    """
+    从指定的非结构化知识库中永久删除一个或多个文档。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+        index_id (str): 知识库ID。
+        file_id (str): 文档ID。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    delete_index_document_request = bailian_20231229_models.DeleteIndexDocumentRequest(
+        index_id=index_id,
+        document_ids=[file_id]
+    )
+    runtime = util_models.RuntimeOptions()
+    return client.delete_index_document_with_options(workspace_id, delete_index_document_request, headers, runtime)
+
+def delete_index(client, workspace_id, index_id):
+    """
+    永久性删除指定的知识库。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+        index_id (str): 知识库ID。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    delete_index_request = bailian_20231229_models.DeleteIndexRequest(
+        index_id=index_id
+    )
+    runtime = util_models.RuntimeOptions()
+    return client.delete_index_with_options(workspace_id, delete_index_request, headers, runtime)
 
 def create_knowledge_base(
         file_path: str,
@@ -259,75 +342,70 @@ def create_knowledge_base(
     source_type = 'DATA_CENTER_FILE'
     structure_type = 'unstructured'
     sink_type = 'DEFAULT'
-    try:
-        # 步骤1：初始化客户端（Client）
-        print("步骤1：初始化Client")
-        client = create_client()
-        # 步骤2：准备文档信息
-        print("步骤2：准备文档信息")
-        file_name = os.path.basename(file_path)
-        file_md5 = calculate_md5(file_path)
-        file_size = get_file_size(file_path)
-        # 步骤3：申请上传租约
-        print("步骤3：向阿里云百炼申请上传租约")
-        lease_response = apply_lease(client, category_id, file_name, file_md5, file_size, workspace_id)
-        lease_id = lease_response.body.data.file_upload_lease_id
-        upload_url = lease_response.body.data.param.url
-        upload_headers = lease_response.body.data.param.headers
-        # 步骤4：上传文档
-        print("步骤4：上传文档到阿里云百炼")
-        upload_file(upload_url, upload_headers, file_path)
-        # 步骤5：将文档添加到服务器
-        print("步骤5：将文档添加到阿里云百炼服务器")
-        add_response = add_file(client, lease_id, parser, category_id, workspace_id)
-        file_id = add_response.body.data.file_id
-        # 步骤6：检查文档状态
-        print("步骤6：检查阿里云百炼中的文档状态")
-        while True:
-            describe_response = describe_file(client, workspace_id, file_id)
-            status = describe_response.body.data.status
-            print(f"当前文档状态：{status}")
-            if status == 'INIT':
-                print("文档待解析，请稍候...")
-            elif status == 'PARSING':
-                print("文档解析中，请稍候...")
-            elif status == 'PARSE_SUCCESS':
-                print("文档解析完成！")
-                break
-            else:
-                print(f"未知的文档状态：{status}，请联系技术支持。")
-                return None
-            time.sleep(5)
-        # 步骤7：初始化知识库
-        print("步骤7：在阿里云百炼中初始化知识库")
-        index_response = create_index(client, workspace_id, file_id, name, structure_type, source_type, sink_type)
-        index_id = index_response.body.data.id
-        # 步骤8：提交索引任务
-        print("步骤8：向阿里云百炼提交索引任务")
-        submit_response = submit_index(client, workspace_id, index_id)
-        job_id = submit_response.body.data.id
-        # 步骤9：获取索引任务状态
-        print("步骤9：获取阿里云百炼索引任务状态")
-        while True:
-            get_index_job_status_response = get_index_job_status(client, workspace_id, job_id, index_id)
-            status = get_index_job_status_response.body.data.status
-            print(f"当前索引任务状态：{status}")
-            if status == 'COMPLETED':
-                break
-            time.sleep(5)
-        print("阿里云百炼知识库创建成功！")
-        return index_id
-    except Exception as e:
-        print(f"发生错误：{e}")
-        return None
-
+    # 步骤1：初始化客户端（Client）
+    print("步骤1：初始化Client")
+    client = create_client()
+    # 步骤2：准备文档信息
+    print("步骤2：准备文档信息")
+    file_name = os.path.basename(file_path)
+    file_md5 = calculate_md5(file_path)
+    file_size = get_file_size(file_path)
+    # 步骤3：申请上传租约
+    print("步骤3：向阿里云百炼申请上传租约")
+    lease_response = apply_lease(client, category_id, file_name, file_md5, file_size, workspace_id)
+    lease_id = lease_response.body.data.file_upload_lease_id
+    upload_url = lease_response.body.data.param.url
+    upload_headers = lease_response.body.data.param.headers
+    # 步骤4：上传文档
+    print("步骤4：上传文档到阿里云百炼")
+    upload_file(upload_url, upload_headers, file_path)
+    # 步骤5：将文档添加到服务器
+    print("步骤5：将文档添加到阿里云百炼服务器")
+    add_response = add_file(client, lease_id, parser, category_id, workspace_id)
+    file_id = add_response.body.data.file_id
+    # 步骤6：检查文档状态
+    print("步骤6：检查阿里云百炼中的文档状态")
+    while True:
+        describe_response = describe_file(client, workspace_id, file_id)
+        status = describe_response.body.data.status
+        print(f"当前文档状态：{status}")
+        if status == 'INIT':
+            print("文档待解析，请稍候...")
+        elif status == 'PARSING':
+            print("文档解析中，请稍候...")
+        elif status == 'PARSE_SUCCESS':
+            print("文档解析完成！")
+            break
+        else:
+            print(f"未知的文档状态：{status}，请联系技术支持。")
+            return None
+        time.sleep(5)
+    # 步骤7：初始化知识库
+    print("步骤7：在阿里云百炼中初始化知识库")
+    index_response = create_index(client, workspace_id, file_id, name, structure_type, source_type, sink_type)
+    index_id = index_response.body.data.id
+    # 步骤8：提交索引任务
+    print("步骤8：向阿里云百炼提交索引任务")
+    submit_response = submit_index(client, workspace_id, index_id)
+    job_id = submit_response.body.data.id
+    # 步骤9：获取索引任务状态
+    print("步骤9：获取阿里云百炼索引任务状态")
+    while True:
+        get_index_job_status_response = get_index_job_status(client, workspace_id, job_id, index_id)
+        status = get_index_job_status_response.body.data.status
+        print(f"当前索引任务状态：{status}")
+        if status == 'COMPLETED':
+            break
+        time.sleep(5)
+    print("阿里云百炼知识库创建成功！")
+    return index_id
 
 def main():
     if not check_environment_variables():
         print("环境变量校验未通过。")
         return
-    file_path = "input_files\case27.pdf"
-    kb_name = "case27"
+    file_path = "input_files\case28.pdf"
+    kb_name = "case28"
     workspace_id = os.environ.get('WORKSPACE_ID')
     create_knowledge_base(file_path, workspace_id, kb_name)
 
