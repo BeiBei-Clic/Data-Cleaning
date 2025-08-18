@@ -400,7 +400,7 @@ def create_knowledge_base(
     print("阿里云百炼知识库创建成功！")
     return index_id
 
-def main():
+def create_dataset_and_upload():
     if not check_environment_variables():
         print("环境变量校验未通过。")
         return
@@ -410,5 +410,105 @@ def main():
     create_knowledge_base(file_path, workspace_id, kb_name)
 
 
+def upload_file_to_existing_knowledge_base(file_path: str, index_id: str, workspace_id: str = None):
+    """
+    将本地文件上传到现有的知识库中
+    
+    参数:
+        file_path (str): 本地文件路径
+        index_id (str): 现有知识库ID
+        workspace_id (str): 业务空间ID，如果为None则从环境变量获取
+    
+    返回:
+        str: 上传成功的文档ID，失败返回None
+    """
+    if not check_environment_variables():
+        print("环境变量校验未通过")
+        return None
+        
+    if workspace_id is None:
+        workspace_id = os.environ.get('WORKSPACE_ID')
+    
+    # 设置默认值
+    category_id = 'default'
+    parser = 'DASHSCOPE_DOCMIND'
+    source_type = 'DATA_CENTER_FILE'
+    
+    print(f"开始上传文件: {file_path}")
+    
+    # 步骤1：初始化客户端
+    client = create_client()
+    
+    # 步骤2：准备文档信息
+    file_name = os.path.basename(file_path)
+    file_md5 = calculate_md5(file_path)
+    file_size = get_file_size(file_path)
+    print(f"文件信息 - 名称: {file_name}, MD5: {file_md5}, 大小: {file_size} 字节")
+    
+    # 步骤3：申请上传租约
+    print("申请上传租约...")
+    lease_response = apply_lease(client, category_id, file_name, file_md5, file_size, workspace_id)
+    lease_id = lease_response.body.data.file_upload_lease_id
+    upload_url = lease_response.body.data.param.url
+    upload_headers = lease_response.body.data.param.headers
+    
+    # 步骤4：上传文档
+    print("上传文档到临时存储...")
+    upload_file(upload_url, upload_headers, file_path)
+    
+    # 步骤5：将文档添加到服务器
+    print("添加文档到百炼服务器...")
+    add_response = add_file(client, lease_id, parser, category_id, workspace_id)
+    file_id = add_response.body.data.file_id
+    
+    # 步骤6：等待文档解析完成
+    print("等待文档解析完成...")
+    while True:
+        describe_response = describe_file(client, workspace_id, file_id)
+        status = describe_response.body.data.status
+        print(f"文档解析状态: {status}")
+        if status == 'PARSE_SUCCESS':
+            print("文档解析完成！")
+            break
+        elif status in ['INIT', 'PARSING']:
+            time.sleep(5)
+        else:
+            print(f"文档解析失败，状态: {status}")
+            return None
+    
+    # 步骤7：将文档添加到现有知识库
+    print(f"将文档添加到知识库 {index_id}...")
+    add_job_response = submit_index_add_documents_job(client, workspace_id, index_id, file_id, source_type)
+    job_id = add_job_response.body.data.id
+    
+    # 步骤8：等待添加任务完成
+    print("等待知识库更新完成...")
+    while True:
+        job_status_response = get_index_job_status(client, workspace_id, index_id, job_id)
+        status = job_status_response.body.data.status
+        print(f"知识库更新状态: {status}")
+        if status == 'COMPLETED':
+            print("文档成功添加到知识库！")
+            break
+        elif status == 'FAILED':
+            print("添加到知识库失败")
+            return None
+        time.sleep(5)
+    
+    return file_id
+
+
+# 在文件末尾添加使用示例
+def example_upload_to_existing_kb():
+    """使用示例：上传文件到现有知识库"""
+    file_path = "input_files\case28.pdf"  # 替换为你的文件路径
+    index_id = "xt2vphcqya"  # 替换为你的知识库ID
+    
+    file_id = upload_file_to_existing_knowledge_base(file_path, index_id)
+    if file_id:
+        print(f"上传成功，文档ID: {file_id}")
+    else:
+        print("上传失败")
+
 if __name__ == '__main__':
-    main()
+    example_upload_to_existing_kb()
