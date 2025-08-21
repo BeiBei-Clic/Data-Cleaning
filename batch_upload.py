@@ -12,7 +12,8 @@ from origin import (
     add_file,
     describe_file,
     get_index_job_status,
-    submit_index_add_documents_job
+    submit_index_add_documents_job,
+    list_index_documents  # 添加导入
 )
 from dotenv import load_dotenv
 
@@ -40,9 +41,20 @@ def batch_upload_to_existing_knowledge_base(directory_path, workspace_id, index_
     
     # 批量上传文件并收集文档ID
     document_ids = []
+    skipped_files = []  # 记录跳过的重复文件
+    
     for file_path in all_files:
-        print(f"正在上传文件: {os.path.basename(file_path)}")
+        file_name = os.path.basename(file_path)
+        print(f"正在检查文件: {file_name}")
         
+        # 检查文件是否已存在
+        response = list_index_documents(client, workspace_id, index_id, file_name)
+        if response.status_code == 200 and response.body.data.documents:
+            print(f"⚠️  文件 {file_name} 已存在于知识库中，跳过上传")
+            skipped_files.append(file_name)
+            continue
+            
+        print(f"正在上传文件: {file_name}")
         # 计算文件信息
         file_name = os.path.basename(file_path)
         file_md5 = calculate_md5(file_path)
@@ -114,7 +126,9 @@ def batch_upload_to_existing_knowledge_base(directory_path, workspace_id, index_
         "success": True,
         "message": f"成功向知识库添加 {len(document_ids)} 个文档",
         "index_id": index_id,
-        "document_ids": document_ids
+        "document_ids": document_ids,
+        "skipped_files": skipped_files,
+        "skipped_count": len(skipped_files)
     }
 
 if __name__ == '__main__':

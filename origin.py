@@ -347,6 +347,27 @@ def submit_index_add_documents_job(client, workspace_id, index_id, file_id, sour
     runtime = util_models.RuntimeOptions()
     return client.submit_index_add_documents_job_with_options(workspace_id, submit_index_add_documents_job_request, headers, runtime)
 
+def list_index_documents(client, workspace_id, index_id, document_name=None):
+    """
+    获取指定知识库中一个或多个文档的详细信息。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+        index_id (str): 知识库ID。
+        document_name (str, optional): 文档名称，用于过滤。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    list_index_documents_request = bailian_20231229_models.ListIndexDocumentsRequest(
+        index_id=index_id,
+        document_name=document_name
+    )
+    runtime = util_models.RuntimeOptions()
+    return client.list_index_documents_with_options(workspace_id, list_index_documents_request, headers, runtime)
+
 def get_index_job_status(client, workspace_id, index_id, job_id):
     """
     查询索引任务状态。
@@ -388,6 +409,21 @@ def delete_index_document(client, workspace_id, index_id, file_id):
     )
     runtime = util_models.RuntimeOptions()
     return client.delete_index_document_with_options(workspace_id, delete_index_document_request, headers, runtime)
+def list_indices(client, workspace_id):
+    """
+    获取指定业务空间下一个或多个知识库的详细信息。
+
+    参数:
+        client (bailian20231229Client): 客户端（Client）。
+        workspace_id (str): 业务空间ID。
+
+    返回:
+        阿里云百炼服务的响应。
+    """
+    headers = {}
+    list_indices_request = bailian_20231229_models.ListIndicesRequest()
+    runtime = util_models.RuntimeOptions()
+    return client.list_indices_with_options(workspace_id, list_indices_request, headers, runtime)
 
 if __name__ == '__main__':
     main()
