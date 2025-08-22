@@ -11,7 +11,7 @@ load_dotenv()
 
 # 阿里云百炼配置常量
 WORKSPACE_ID = os.environ.get('WORKSPACE_ID', '')
-INDEX_ID = os.environ.get('BAILIAN_DATASET_ID', '')
+dataset1 = os.environ.get('BAILIAN_DATASET_ID_2', '')
 
 def create_bailian_client() -> bailian20231229Client:
     """创建阿里云百炼客户端"""
@@ -75,7 +75,7 @@ def bailian_knowledge_retrieve(query: str, workspace_id: str = None, index_id: s
     
     # 使用传入参数或环境变量
     ws_id = workspace_id or WORKSPACE_ID
-    idx_id = index_id or INDEX_ID
+    idx_id = dataset1
     
     if not ws_id or not idx_id:
         return "❌ 错误：缺少必要的配置参数。请设置 WORKSPACE_ID 和 INDEX_ID 环境变量，或在调用时传入参数。"
