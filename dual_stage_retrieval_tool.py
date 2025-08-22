@@ -111,7 +111,7 @@ def extract_document_ids_from_summary_results(nodes: List) -> List[str]:
 
 def retrieve_full_document_by_id(client, workspace_id, index_id, document_id: str) -> Optional[str]:
     """
-    通过文档ID从原文知识库中检索完整文档内容，使用精确匹配
+    通过文档ID从原文知识库中检索完整文档内容，使用精确匹配，按存储顺序返回
     """
     headers = {}
     
@@ -132,6 +132,39 @@ def retrieve_full_document_by_id(client, workspace_id, index_id, document_id: st
     if response.status_code == 200 and hasattr(response.body, 'data'):
         nodes = response.body.data.nodes if hasattr(response.body.data, 'nodes') else []
         if nodes:
+            # 定义排序函数，从_id中提取数字索引
+            def get_sort_key(node):
+                # 尝试从元数据中获取_id
+                metadata = getattr(node, 'metadata', {}) if hasattr(node, 'metadata') else {}
+                if isinstance(metadata, dict):
+                    node_id = metadata.get('_id', '')
+                    if node_id:
+                        # 从_id末尾提取数字部分，格式: {前缀}_{chunk_index}_{sub_index}
+                        parts = node_id.split('_')
+                        if len(parts) >= 2:
+                            try:
+                                # 取最后两个数字部分作为排序键
+                                chunk_index = int(parts[-2]) if parts[-2].isdigit() else 0
+                                sub_index = int(parts[-1]) if parts[-1].isdigit() else 0
+                                return (chunk_index, sub_index)
+                            except (ValueError, IndexError):
+                                pass
+                
+                # 如果无法从_id提取，尝试其他字段
+                if isinstance(metadata, dict):
+                    page_number = metadata.get('page_number')
+                    if page_number is not None:
+                        try:
+                            return (int(page_number), 0)
+                        except (ValueError, TypeError):
+                            pass
+                
+                # 默认返回(0, 0)
+                return (0, 0)
+            
+            # 按照提取的索引进行排序
+            nodes = sorted(nodes, key=get_sort_key)
+            
             # 提取所有匹配文档的文本内容
             full_content = []
             for node in nodes:
@@ -281,7 +314,7 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
 
 if __name__ == "__main__":
     # 测试双阶段检索功能
-    test_query = "生态农业可持续发展"
+    test_query = "生态农业可持续发展模式"
     print(f"测试查询: {test_query}")
     print(f"{'='*80}")
     result = dual_stage_retrieve.invoke({"query": test_query})
