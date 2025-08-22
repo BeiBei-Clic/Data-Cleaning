@@ -244,13 +244,10 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
                 f"{'-'*40}",
                 text.strip()[:200] + "..." if len(text.strip()) > 200 else text.strip()
             ])
-        
-        # 第二阶段：从原文知识库检索完整内容
-        result_lines.extend([
-            "",
-            f"📚 第二阶段 - 完整案例内容:"
-        ])
-        
+
+        print('\n'.join(result_lines))
+        result_lines=[]
+
         # 使用提取的文档ID检索完整内容
         print(f"📚 第二阶段：使用文档ID {document_ids} 检索完整案例...")
         
