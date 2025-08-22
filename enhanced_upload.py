@@ -1,11 +1,8 @@
 import os
 import glob
 import time
-import docx
-import PyPDF2
-import warnings
+import requests
 from pathlib import Path
-from contextlib import redirect_stderr
 from origin import (
     check_environment_variables,
     create_client,
@@ -32,34 +29,114 @@ class EnhancedUploader:
         )
         self.model = 'google/gemini-2.5-flash'
         
+        # minerU API配置
+        self.mineru_token = os.getenv('MINERU_API_TOKEN', "官网申请的api token")
+        self.mineru_base_url = "https://mineru.net/api/v4"
+        
         # 文本处理参数
-        self.chunk_size = 2000
-        self.overlap_size = 400
+        self.chunk_size = 20000
+        self.overlap_size = 1000
         self.max_retries = 3
     
     def read_file(self, file_path: str) -> str:
-        """读取文件内容"""
+        """使用minerU API读取并解析文档内容，返回markdown格式"""
         path = Path(file_path)
         ext = path.suffix.lower()
         
-        if ext == '.docx':
-            doc = docx.Document(path)
-            return '\n'.join([p.text for p in doc.paragraphs])
-        elif ext == '.pdf':
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                with open(os.devnull, 'w') as devnull:
-                    with redirect_stderr(devnull):
-                        with open(path, 'rb') as f:
-                            reader = PyPDF2.PdfReader(f)
-                            return '\n'.join([page.extract_text() for page in reader.pages])
-        else:
+        # 对于纯文本文件，直接读取
+        if ext in ['.txt', '.md']:
             with open(path, 'r', encoding='utf-8') as f:
                 return f.read()
+        
+        # 对于PDF、DOCX等文档，使用minerU API解析
+        if ext in ['.pdf', '.docx', '.doc', '.ppt', '.pptx']:
+            return self._parse_with_mineru(file_path)
+        
+        # 其他格式尝试直接读取
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    def _parse_with_mineru(self, file_path: str) -> str:
+        """使用minerU API解析文档"""
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.mineru_token}"
+        }
+        
+        # 1. 申请上传URL
+        file_name = os.path.basename(file_path)
+        upload_data = {
+            "enable_formula": True,
+            "language": "ch",
+            "enable_table": True,
+            "files": [
+                {"name": file_name, "is_ocr": True, "data_id": file_name}
+            ]
+        }
+        
+        response = requests.post(
+            f"{self.mineru_base_url}/file-urls/batch",
+            headers=headers,
+            json=upload_data
+        )
+        
+        if response.status_code != 200:
+            print(f"申请上传URL失败: {response.status_code}")
+            return ""
+        
+        result = response.json()
+        if result["code"] != 0:
+            print(f"申请上传URL失败: {result.get('msg', '未知错误')}")
+            return ""
+        
+        batch_id = result["data"]["batch_id"]
+        upload_url = result["data"]["file_urls"][0]
+        
+        # 2. 上传文件
+        with open(file_path, 'rb') as f:
+            upload_response = requests.put(upload_url, data=f)
+            if upload_response.status_code != 200:
+                print(f"文件上传失败: {upload_response.status_code}")
+                return ""
+        
+        print(f"文件 {file_name} 上传成功，开始解析...")
+        
+        # 3. 等待解析完成并获取结果
+        max_wait_time = 300  # 最大等待5分钟
+        wait_time = 0
+        
+        while wait_time < max_wait_time:
+            time.sleep(10)
+            wait_time += 10
+            
+            # 查询解析结果
+            result_response = requests.get(
+                f"{self.mineru_base_url}/extract-results/batch/{batch_id}",
+                headers=headers
+            )
+            
+            if result_response.status_code == 200:
+                result_data = result_response.json()
+                if result_data["code"] == 0:
+                    data = result_data["data"]
+                    if data and len(data) > 0:
+                        # 获取第一个文件的解析结果
+                        file_result = data[0]
+                        if "md_content" in file_result:
+                            print(f"文件 {file_name} 解析完成")
+                            return file_result["md_content"]
+                        elif "status" in file_result and file_result["status"] == "failed":
+                            print(f"文件 {file_name} 解析失败")
+                            return ""
+            
+            print(f"等待解析完成... ({wait_time}s)")
+        
+        print(f"文件 {file_name} 解析超时")
+        return ""
     
     def generate_summary(self, text: str, filename: str) -> str:
         """生成摘要（采用分块清洗相同的分块逻辑）"""
-        CHUNK_SIZE = 20000
+        CHUNK_SIZE = self.chunk_size
         OVERLAP_SIZE = self.overlap_size
 
         prompt_template = """请从以下文本中提取关键信息作为部分摘要：
