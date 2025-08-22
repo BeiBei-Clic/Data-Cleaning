@@ -4,7 +4,7 @@ import json
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
-from filter import bailian_knowledge_retrieve
+from dual_stage_retrieval_tool import dual_stage_retrieve
 
 
 load_dotenv()
@@ -20,7 +20,7 @@ async def stream_with_token_output():
     
     agent = create_react_agent(
         model=llm,
-        tools=[bailian_knowledge_retrieve],
+        tools=[dual_stage_retrieve],
         prompt="""
         你是一个专业的乡村经营顾问AI助手，拥有访问乡村经营知识库的能力。
         
