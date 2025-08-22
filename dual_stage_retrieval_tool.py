@@ -190,50 +190,36 @@ def retrieve_full_document_by_id(client, workspace_id, index_id, document_id: st
     return None
     
 @tool
-def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: str = None, 
-                       original_index_id: str = None, top_k: int = 3) -> str:
+def dual_stage_retrieve(query: str, top_k: int = 3) -> str:
     """
-    双阶段检索工具：先从摘要知识库检索，再从原文知识库获取完整案例。
+    乡村振兴案例双阶段检索工具：先从摘要库检索，再获取完整案例。
     
-    这个工具实现两阶段检索策略：
-    1. 第一阶段：在摘要知识库中检索匹配的摘要段落
-    2. 第二阶段：提取摘要文件名（即原文档ID），从原文知识库中检索完整案例内容
+    这个工具专门用于检索乡村振兴相关案例信息：
+    1. 第一阶段：在摘要知识库中检索匹配的案例摘要
+    2. 第二阶段：获取完整的案例详细内容
     
-    适用于需要先通过摘要快速定位相关案例，再获取完整详细内容的场景。
+    适用于查询乡村振兴、农业发展、产业化经营等相关案例。
     
     Args:
-        query (str): 要检索的查询文本，例如 "生态农业技术应用"
-        workspace_id (str, optional): 阿里云百炼业务空间ID，默认使用环境变量WORKSPACE_ID
-        summary_index_id (str, optional): 摘要知识库ID，默认使用环境变量BAILIAN_SUMMARY_DATASET_ID
-        original_index_id (str, optional): 原文知识库ID，默认使用环境变量BAILIAN_ORIGINAL_DATASET_ID
+        query (str): 检索关键词，建议使用3-5个核心关键词，如"生态农业 产业化"
         top_k (int, optional): 返回的最大结果数量，默认为3
         
     Returns:
-        str: 格式化的检索结果，包含摘要匹配信息和完整案例内容
+        str: 格式化的检索结果，包含相关案例的完整内容
         
     Example:
-        >>> result = dual_stage_retrieve("可持续农业发展模式")
-        >>> print(result)
-        🔍 双阶段检索结果:
-        - 查询: 可持续农业发展模式
-        - 摘要知识库: xxx
-        - 原文知识库: xxx
-        
-        📋 第一阶段 - 摘要检索结果:
-        找到 2 个相关摘要
-        
-        📚 第二阶段 - 完整案例内容:
-        [完整案例1]
-        [完整案例2]
+        >>> result = dual_stage_retrieve("生态农业 可持续性")
+        >>> result = dual_stage_retrieve("乡村旅游 产业融合")
+        >>> result = dual_stage_retrieve("合作社 经营模式")
     """
     
-    # 使用传入参数或环境变量
-    ws_id = workspace_id or WORKSPACE_ID
-    summary_idx_id = summary_index_id or SUMMARY_INDEX_ID
-    original_idx_id = original_index_id or ORIGINAL_INDEX_ID
+    # 直接使用环境变量，不再作为参数
+    ws_id = WORKSPACE_ID
+    summary_idx_id = SUMMARY_INDEX_ID
+    original_idx_id = ORIGINAL_INDEX_ID
     
     if not ws_id or not summary_idx_id or not original_idx_id:
-        return "❌ 错误：缺少必要的配置参数。请设置 WORKSPACE_ID、BAILIAN_SUMMARY_DATASET_ID 和 BAILIAN_ORIGINAL_DATASET_ID 环境变量，或在调用时传入参数。"
+        return "❌ 错误：知识库配置缺失。请检查环境变量配置。"
     
     # 创建客户端
     client = create_bailian_client()
@@ -282,6 +268,7 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
         result_lines=[]
 
         # 使用提取的文档ID检索完整内容
+        print()
         print(f"📚 第二阶段：使用文档ID {document_ids} 检索完整案例...")
         
         full_cases_found = 0
@@ -314,7 +301,7 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
 
 if __name__ == "__main__":
     # 测试双阶段检索功能
-    test_query = "生态农业可持续发展模式"
+    test_query = "生态农业可持续性模式"
     print(f"测试查询: {test_query}")
     print(f"{'='*80}")
     result = dual_stage_retrieve.invoke({"query": test_query})

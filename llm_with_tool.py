@@ -6,8 +6,24 @@ from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 from dual_stage_retrieval_tool import dual_stage_retrieve
 
-
 load_dotenv()
+
+async def stream_agent_response(agent, input_data):
+    """统一的流式输出处理"""
+    content=""
+    structured_response=None
+    async for event in agent.astream_events(input_data):
+        if event.get("event") == "on_chain_end":
+            event_data = event.get("data", {})
+            if "output" in event_data and "structured_response" in event_data["output"]:
+                structured_response = event_data["output"]["structured_response"]
+        else:
+            chunk = event.get("data", {}).get("chunk", {})
+            if hasattr(chunk, 'content') and chunk.content:
+                print(chunk.content, end="", flush=True)
+                content+=chunk.content
+
+    return structured_response,content
 
 async def stream_with_token_output():
     llm = ChatOpenAI(
@@ -22,65 +38,47 @@ async def stream_with_token_output():
         model=llm,
         tools=[dual_stage_retrieve],
         prompt="""
-        你是一个专业的乡村经营顾问AI助手，拥有访问乡村经营知识库的能力。
+        你是一个专业的乡村振兴顾问AI助手，拥有访问振兴乡村案例知识库的能力。
         
-        ## 知识库工具使用指南：
+        ## 知识库检索工具使用指南：
         
         ### 核心原则：
-        1. **提炼核心问题**：不要将用户的完整问题直接传入工具，而是提炼出核心关键词进行检索
-        2. **多次检索**：可以多次调用工具获取更完整的信息，每次聚焦不同角度
-        3. **利用元数据过滤**：充分利用五个元数据字段提高检索精准度
+        1. **提炼关键词**：不要将用户的完整问题直接传入工具，而是提炼出核心关键词进行检索
+        2. **多次检索**：可以多次调用工具获取更完整的信息，每次聚焦不同关键词
+        3. **渐进式查询**：先用宽泛关键词，再根据结果进行精准查询
         
         ### 检索策略：
         - 将复杂问题拆解为多个核心概念分别检索
-        - 先进行宽泛检索，再根据结果进行精准检索
-        - 根据用户需求选择合适的元数据过滤条件
-        
-        ### 五个元数据过滤字段：
-        1. **summary_keywords**: 摘要关键词过滤 - 用于筛选特定主题的案例
-        2. **sustainable_operation**: 可持续运营关键词 - 筛选可持续发展相关内容
-        3. **production_sales**: 产销关键词 - 筛选生产销售相关案例
-        4. **industry_keywords**: 产业关键词 - 按产业类型筛选
-        5. **resource_keywords**: 资源关键词 - 按资源类型筛选
+        - 使用简洁的关键词而非完整句子
+        - 根据检索结果调整后续查询策略
         
         ### 使用示例：
-        - 用户问"如何发展生态农业"，应该：
+        - 用户问"如何在山区发展生态农业产业化经营模式"，应该：
           1. 先检索"生态农业"获取基础信息
-          2. 再检索"可持续发展"并使用sustainable_operation过滤
-          3. 最后检索"农业产业化"并使用industry_keywords过滤
+          2. 再检索"产业化经营"了解经营模式
+          3. 最后检索"山区农业"获取地域特色案例
         
-        记住：多角度检索比单次检索更能获得全面信息！
+        ### 注意事项：
+        - 每次检索只传入3-5个核心关键词
+        - 避免传入完整的用户问题
+        - 多角度检索比单次检索更能获得全面信息
+        
+        记住：用关键词检索，多次调用，综合分析！
         """
     )
     
-    test_query = "请帮我查询生态农业相关的信息"
+    test_query = """"
+    浙江湖州某乡村拥有一片闲置的山谷林地，周边有溪流、小型瀑布等自然景观，但长期因缺乏开发而处于
+荒废状态，当地也希望通过发展文旅产业带动乡村振兴，却面临资金有限、业态规划不清晰、担心同质化竞争
+等问题。若该村庄计划借鉴类似模式打造露营文旅项目，可从哪些方面入手破解发展难题？其思路与浙江安吉
+半岛理想村（半岛露营村2号营地）的实践有哪些共通之处？
+    """
     print(f"🤖 查询: {test_query}")
     print("=" * 60)
+    print()
+    structured_response,content=await stream_agent_response(agent, {"messages": [{"role": "user", "content": test_query}]})
+
     
-    async for event in agent.astream_events(
-        {"messages": [{"role": "user", "content": test_query}]},
-        version="v1"
-    ):
-        event_type = event.get("event")
-        
-        if event_type == "on_chat_model_stream":
-            chunk = event.get("data", {}).get("chunk", {})
-            if hasattr(chunk, 'content') and chunk.content:
-                print(chunk.content, end="", flush=True)
-                
-        elif event_type == "on_tool_start":
-            tool_name = event.get("name", "")
-            tool_input = event.get("data", {}).get("input", {})
-            print(f"\n🔧 [{tool_name}] 执行中...")
-            print(f"参数: {json.dumps(tool_input, ensure_ascii=False)}")
-            
-        elif event_type == "on_tool_end":
-            tool_name = event.get("name", "")
-            tool_output = event.get("data", {}).get("output", "")
-            print(f"\n⚡ [{tool_name}] 完成")
-            
-            output_content = tool_output.content if hasattr(tool_output, 'content') else str(tool_output)
-            print(f"结果: {output_content[:100]}..." if len(output_content) > 100 else f"结果: {output_content}")
 
 if __name__ == "__main__":
     asyncio.run(stream_with_token_output())
