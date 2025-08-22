@@ -68,7 +68,7 @@ def list_index_documents(client, workspace_id, index_id, document_name=None):
 
 def extract_document_ids_from_summary_results(nodes: List) -> List[str]:
     """
-    从摘要检索结果中提取文档ID（摘要文件名）
+    从摘要检索结果中提取文档ID（摘要文件名去掉.md后缀）
     
     参数:
         nodes: 检索结果节点列表
@@ -79,83 +79,83 @@ def extract_document_ids_from_summary_results(nodes: List) -> List[str]:
     document_ids = []
     
     for node in nodes:
-        # 尝试从元数据中获取文档ID
+        # 尝试从元数据中获取文档名称
         metadata = getattr(node, 'metadata', {}) if hasattr(node, 'metadata') else {}
         
-        # 检查元数据中是否有doc_id字段
+        # 检查元数据中是否有document_name字段
         if isinstance(metadata, dict):
-            doc_id = metadata.get('doc_id')
-            if doc_id:
-                # 从完整的doc_id中提取实际的文档ID
-                # 格式通常是: file_xxxxx_数字，我们需要提取中间的xxxxx部分
-                if 'file_' in doc_id:
-                    # 提取file_后面到最后一个下划线之前的部分
-                    parts = doc_id.split('_')
-                    if len(parts) >= 3:
-                        # 重新组合为原始文档ID格式
-                        extracted_id = '_'.join(parts[1:-1])  # 去掉file_前缀和最后的数字后缀
-                        if extracted_id and extracted_id not in document_ids:
-                            document_ids.append(extracted_id)
-                else:
-                    # 如果不是file_格式，直接使用
-                    if doc_id not in document_ids:
+            document_name = metadata.get('document_name') or metadata.get('doc_name') or metadata.get('file_name')
+            if document_name:
+                # 从文档名称中提取文档ID（去掉.md后缀）
+                if document_name.endswith('.md'):
+                    doc_id = document_name[:-3]  # 去掉.md后缀
+                    if doc_id and doc_id not in document_ids:
                         document_ids.append(doc_id)
+                else:
+                    # 如果不是.md格式，直接使用
+                    if document_name not in document_ids:
+                        document_ids.append(document_name)
+        
+        # 如果元数据中没有找到，尝试从其他可能的字段获取
+        if not document_ids:
+            # 检查是否有其他可能包含文档名的字段
+            for field_name in ['title', 'filename', 'name']:
+                field_value = metadata.get(field_name)
+                if field_value and field_value.endswith('.md'):
+                    doc_id = field_value[:-3]
+                    if doc_id and doc_id not in document_ids:
+                        document_ids.append(doc_id)
+                    break
         
     return document_ids
 
 def retrieve_full_document_by_id(client, workspace_id, index_id, document_id: str) -> Optional[str]:
     """
-    通过文档ID从原文知识库中检索完整文档内容
-    
-    参数:
-        client: 百炼客户端
-        workspace_id: 工作空间ID
-        index_id: 原文知识库ID
-        document_id: 文档ID
-        
-    返回:
-        Optional[str]: 完整文档内容，如果未找到则返回None
+    通过文档ID从原文知识库中检索完整文档内容，使用精确匹配
     """
-    try:
-        # 方法1：使用文档ID作为查询词进行检索
-        result = retrieve_index(client, workspace_id, index_id, document_id)
-        
-        if result and hasattr(result, 'body') and hasattr(result.body, 'data'):
-            nodes = result.body.data.nodes if hasattr(result.body.data, 'nodes') else []
-            if nodes:
-                # 合并所有检索到的内容
-                full_content = []
-                for node in nodes:
-                    text = getattr(node, 'text', '') if hasattr(node, 'text') else ''
-                    if text.strip():
-                        full_content.append(text.strip())
-                
-                if full_content:
-                    return '\n\n'.join(full_content)
-        
-        # 方法2：尝试通过文档列表API查找特定文档
-        doc_list_result = list_index_documents(client, workspace_id, index_id, f"{document_id}.md")
-        if doc_list_result and hasattr(doc_list_result, 'body'):
-            # 如果找到了文档，再次尝试检索
-            result = retrieve_index(client, workspace_id, index_id, f"文档ID:{document_id}")
-            if result and hasattr(result, 'body'):
-                nodes = result.body.data.nodes if hasattr(result.body.data, 'nodes') else []
-                if nodes:
-                    full_content = []
-                    for node in nodes:
-                        text = getattr(node, 'text', '') if hasattr(node, 'text') else ''
-                        if text.strip():
-                            full_content.append(text.strip())
+    headers = {}
+    
+    # 构建元数据过滤器，精确匹配doc_id字段
+    search_filters = [{
+        "doc_id": document_id  # 精确匹配，不使用like
+    }]
+    
+    retrieve_request = bailian_20231229_models.RetrieveRequest(
+        index_id=index_id,
+        query=document_id,  # 使用文档ID作为查询词
+        search_filters=search_filters
+    )
+    
+    runtime = util_models.RuntimeOptions()
+    response = client.retrieve_with_options(workspace_id, retrieve_request, headers, runtime)
+    
+    if response.status_code == 200 and hasattr(response.body, 'data'):
+        nodes = response.body.data.nodes if hasattr(response.body.data, 'nodes') else []
+        if nodes:
+            # 提取所有匹配文档的文本内容
+            full_content = []
+            for node in nodes:
+                text = getattr(node, 'text', '') if hasattr(node, 'text') else ''
+                if text.strip():
+                    # 过滤掉元数据信息，只保留纯文本
+                    lines = text.split('\n')
+                    clean_lines = []
+                    for line in lines:
+                        if not (line.strip().startswith('📋 元数据:') or 
+                               line.strip().startswith('元数据:') or
+                               line.strip().startswith('文档ID:') or
+                               line.strip().startswith('来源:')):
+                            clean_lines.append(line)
                     
-                    if full_content:
-                        return '\n\n'.join(full_content)
-        
-        return None
-        
-    except Exception as e:
-        print(f"检索完整文档时发生错误: {str(e)}")
-        return None
-
+                    clean_text = '\n'.join(clean_lines).strip()
+                    if clean_text:
+                        full_content.append(clean_text)
+            
+            if full_content:
+                return '\n\n'.join(full_content)
+    
+    return None
+    
 @tool
 def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: str = None, 
                        original_index_id: str = None, top_k: int = 3) -> str:
@@ -237,7 +237,6 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
         for i, node in enumerate(summary_nodes[:top_k], 1):
             score = getattr(node, 'score', 0) if hasattr(node, 'score') else 0
             text = getattr(node, 'text', '') if hasattr(node, 'text') else ''
-            metadata = getattr(node, 'metadata', {}) if hasattr(node, 'metadata') else {}
             
             result_lines.extend([
                 f"\n{'-'*40}",
@@ -245,9 +244,6 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
                 f"{'-'*40}",
                 text.strip()[:200] + "..." if len(text.strip()) > 200 else text.strip()
             ])
-            
-            if metadata:
-                result_lines.append(f"📋 元数据: {metadata}")
         
         # 第二阶段：从原文知识库检索完整内容
         result_lines.extend([
@@ -255,55 +251,31 @@ def dual_stage_retrieve(query: str, workspace_id: str = None, summary_index_id: 
             f"📚 第二阶段 - 完整案例内容:"
         ])
         
-        if not document_ids:
-            # 如果无法提取文档ID，尝试使用摘要内容作为查询词在原文库中检索
-            print(f"⚠️ 无法从摘要中提取文档ID，尝试使用摘要内容在原文库中检索...")
-            original_result = retrieve_index(client, ws_id, original_idx_id, query)
+        # 使用提取的文档ID检索完整内容
+        print(f"📚 第二阶段：使用文档ID {document_ids} 检索完整案例...")
+        
+        full_cases_found = 0
+        for i, doc_id in enumerate(document_ids[:top_k], 1):
+            print(f"  正在检索文档ID: {doc_id}")
+            full_content = retrieve_full_document_by_id(client, ws_id, original_idx_id, doc_id)
             
-            if original_result and hasattr(original_result, 'body'):
-                original_nodes = original_result.body.data.nodes if hasattr(original_result.body.data, 'nodes') else []
-                
-                if original_nodes:
-                    for i, node in enumerate(original_nodes[:top_k], 1):
-                        text = getattr(node, 'text', '') if hasattr(node, 'text') else ''
-                        score = getattr(node, 'score', 0) if hasattr(node, 'score') else 0
-                        
-                        result_lines.extend([
-                            f"\n{'='*50}",
-                            f"完整案例 {i} (相关度: {score:.3f}):",
-                            f"{'='*50}",
-                            text.strip()
-                        ])
-                else:
-                    result_lines.append("❌ 未能在原文知识库中找到对应的完整案例")
+            if full_content:
+                result_lines.extend([
+                    f"\n{'='*50}",
+                    f"完整案例 {i} (文档ID: {doc_id}):",
+                    f"{'='*50}",
+                    full_content
+                ])
+                full_cases_found += 1
             else:
-                result_lines.append("❌ 原文知识库检索失败")
+                result_lines.extend([
+                    f"\n⚠️ 文档ID {doc_id} 对应的完整案例未找到"
+                ])
+        
+        if full_cases_found == 0:
+            result_lines.append("\n❌ 未能检索到任何完整案例内容")
         else:
-            # 使用提取的文档ID检索完整内容
-            print(f"📚 第二阶段：使用文档ID {document_ids} 检索完整案例...")
-            
-            full_cases_found = 0
-            for i, doc_id in enumerate(document_ids[:top_k], 1):
-                print(f"  正在检索文档ID: {doc_id}")
-                full_content = retrieve_full_document_by_id(client, ws_id, original_idx_id, doc_id)
-                
-                if full_content:
-                    result_lines.extend([
-                        f"\n{'='*50}",
-                        f"完整案例 {i} (文档ID: {doc_id}):",
-                        f"{'='*50}",
-                        full_content
-                    ])
-                    full_cases_found += 1
-                else:
-                    result_lines.extend([
-                        f"\n⚠️ 文档ID {doc_id} 对应的完整案例未找到"
-                    ])
-            
-            if full_cases_found == 0:
-                result_lines.append("\n❌ 未能检索到任何完整案例内容")
-            else:
-                result_lines.insert(-full_cases_found*4-1, f"\n✅ 成功检索到 {full_cases_found} 个完整案例")
+            result_lines.insert(-full_cases_found*4-1, f"\n✅ 成功检索到 {full_cases_found} 个完整案例")
         
         return '\n'.join(result_lines)
         
