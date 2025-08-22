@@ -18,8 +18,8 @@ ORIGINAL_INDEX_ID = os.environ.get('BAILIAN_ORIGINAL_DATASET_ID', '')  # 原文�
 def create_bailian_client() -> bailian20231229Client:
     """创建阿里云百炼客户端"""
     config = open_api_models.Config(
-        access_key_id=os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID'),
-        access_key_secret=os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+        access_key_id=os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID', ''),
+        access_key_secret=os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET', '')
     )
     config.endpoint = 'bailian.cn-beijing.aliyuncs.com'
     return bailian20231229Client(config)
@@ -59,10 +59,16 @@ def list_index_documents(client, workspace_id, index_id, document_name=None):
         阿里云百炼服务的响应。
     """
     headers = {}
-    list_index_documents_request = bailian_20231229_models.ListIndexDocumentsRequest(
-        index_id=index_id,
-        document_name=document_name
-    )
+    # 创建请求对象，只有当document_name不为None时才传递该参数
+    if document_name is not None:
+        list_index_documents_request = bailian_20231229_models.ListIndexDocumentsRequest(
+            index_id=index_id,
+            document_name=document_name
+        )
+    else:
+        list_index_documents_request = bailian_20231229_models.ListIndexDocumentsRequest(
+            index_id=index_id
+        )
     runtime = util_models.RuntimeOptions()
     return client.list_index_documents_with_options(workspace_id, list_index_documents_request, headers, runtime)
 
